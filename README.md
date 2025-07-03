@@ -11,10 +11,10 @@ This suite of tools helps automate the process of collecting raw image data, man
 -   Bulk image downloader with resumption and error logging.
 -   Manual sorting helper that guides users to build the correct folder hierarchy.
 -   Interactive crop-and-metadata collection with Tkinter UIs.
--   Leg/head cropping with remembered cuts.
--   Eye line, hair color, voice, and scale selection.
+-   Body & Expression cropping with remembered cuts.
+-   Eye line, name color, voice, and scale selection.
 -   Scale matching to reference sprites with real-time comparison.
--   Generates game-ready folders with consistent naming and metadata.
+-   Generates game-ready Student Transfer character folders with consistent naming and metadata.
 -   Windows batch script for one-click setup and launching.
 
 ---
@@ -44,14 +44,14 @@ This will:
 
 The pipeline consists of **three interactive steps**, which can be run together in one session or separately at any time.
 
-### 1️⃣ Downloader
+### 1. Downloader
 
 -   Prompts for a gallery start page URL.
 -   Downloads images to a chosen folder in your OS Downloads directory.
 -   Supports resuming partial downloads and retrying failed links.
 -   Logs all progress and errors.
 
-### 2️⃣ Manual Sorting Helper
+### 2. Manual Sorting Helper
 
 -   Prompts for your download folder path.
 -   Opens your system's file explorer to help you organize sprites into:
@@ -65,7 +65,7 @@ CharacterFolder/
 
 -   Gives clear instructions on the required structure.
 
-### 3️⃣ Organizer / Finalizer
+### 3. Organizer / Finalizer
 
 -   Guides you through:
 

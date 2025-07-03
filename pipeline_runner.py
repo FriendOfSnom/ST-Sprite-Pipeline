@@ -108,7 +108,7 @@ def main():
 
     elif choice == '4':
         # Step 4: Generate Expression Sheets
-        sheets_path = input("\nEnter the path to your organized sprite output folder:\n> ").strip()
+        sheets_path = input("\nEnter the path to the folder containing your character folders:\n> ").strip()
         if not sheets_path:
             print("\nERROR: Folder path is required. Exiting.")
             sys.exit(1)

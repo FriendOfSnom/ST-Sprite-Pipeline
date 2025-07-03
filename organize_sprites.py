@@ -848,6 +848,9 @@ def run_organizer_interactive(workspace_input=None, output_input=None):
 
     run_organizer(workspace_input, output_input)
 
+    print("\n[INFO] Organizer step complete.")
+    return output_input
+
 # -----------------------
 # Entry Point
 # -----------------------

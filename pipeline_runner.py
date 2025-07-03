@@ -11,6 +11,7 @@ Steps:
 1. Downloader
 2. Manual Sorting Helper
 3. Organizer and Finalizer
+4. Generate Expression Sheets
 """
 
 import sys
@@ -34,6 +35,7 @@ def main():
     print("1. Downloader")
     print("2. Manual Sorting Helper")
     print("3. Organizer and Finalizer")
+    print("4. Generate Expression Sheets")
     print("Q. Quit")
 
     choice = input("\nEnter your choice: ").strip().lower()
@@ -46,20 +48,28 @@ def main():
     sorted_path = None
 
     if choice == '1':
-        # Start with Downloader
+        # Step 1: Downloader
         downloads_path = run_downloader_interactive()
 
         if ask_user_continue("Continue to Step 2 (Manual Sorting)?"):
             sorted_path = run_manual_sort(downloads_path)
             if ask_user_continue("Continue to Step 3 (Organizer)?"):
-                run_organizer_interactive(sorted_path)
+                organizer_path = run_organizer_interactive(sorted_path)
+                if ask_user_continue("Continue to Step 4 (Expression Sheets)?"):
+                    import subprocess
+                    try:
+                        print("\n[INFO] Running Expression Sheet Generator...")
+                        subprocess.run([sys.executable, "expression_sheet_maker.py", organizer_path], check=True)
+                        print("\n[INFO] Expression sheets generated successfully!")
+                    except Exception as e:
+                        print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
             else:
                 print("\nDone! You can run Step 3 later with that same folder.")
         else:
             print("\nDone! You can run Step 2 later with that same folder.")
 
     elif choice == '2':
-        # Start with Manual Sorting directly
+        # Step 2: Manual Sorting
         downloads_path = input("\nEnter the path to your downloaded images folder:\n> ").strip()
         if not downloads_path:
             print("\nERROR: Folder path is required. Exiting.")
@@ -67,18 +77,50 @@ def main():
 
         sorted_path = run_manual_sort(downloads_path)
         if ask_user_continue("Continue to Step 3 (Organizer)?"):
-            run_organizer_interactive(sorted_path)
+            organizer_path = run_organizer_interactive(sorted_path)
+            if ask_user_continue("Continue to Step 4 (Expression Sheets)?"):
+                import subprocess
+                try:
+                    print("\n[INFO] Running Expression Sheet Generator...")
+                    subprocess.run([sys.executable, "expression_sheet_maker.py", organizer_path], check=True)
+                    print("\n[INFO] Expression sheets generated successfully!")
+                except Exception as e:
+                    print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
         else:
             print("\nDone! You can run Step 3 later with that same folder.")
 
     elif choice == '3':
-        # Start with Organizer directly
+        # Step 3: Organizer and Finalizer
         sorted_path = input("\nEnter the path to your manually sorted sprite folder:\n> ").strip()
         if not sorted_path:
             print("\nERROR: Folder path is required. Exiting.")
             sys.exit(1)
 
-        run_organizer_interactive(sorted_path)
+        organizer_path = run_organizer_interactive(sorted_path)
+        if ask_user_continue("Continue to Step 4 (Expression Sheets)?"):
+            import subprocess
+            try:
+                print("\n[INFO] Running Expression Sheet Generator...")
+                subprocess.run([sys.executable, "expression_sheet_maker.py", organizer_path], check=True)
+                print("\n[INFO] Expression sheets generated successfully!")
+            except Exception as e:
+                print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
+
+    elif choice == '4':
+        # Step 4: Generate Expression Sheets
+        sheets_path = input("\nEnter the path to your organized sprite output folder:\n> ").strip()
+        if not sheets_path:
+            print("\nERROR: Folder path is required. Exiting.")
+            sys.exit(1)
+
+        import subprocess
+        try:
+            print("\n[INFO] Running Expression Sheet Generator...")
+            subprocess.run([sys.executable, "expression_sheet_maker.py", sheets_path], check=True)
+            print("\n[INFO] Expression sheets generated successfully!")
+        except Exception as e:
+            print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
+
     else:
         print("\nInvalid choice. Exiting.")
         sys.exit(1)

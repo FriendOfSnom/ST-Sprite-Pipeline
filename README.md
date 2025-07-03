@@ -115,11 +115,6 @@ project-root/
 └── reference_sprites/   <-- (you supply these!)
 ```
 
-* **reference\_sprites/** *(required but not included)*
-
-  * Contains your standard-sized reference sprites and matching `.yml` files.
-  * Each `.yml` describes eye line and scale for that reference.
-
 ---
 
 ## Notes & Best Practices

@@ -1,0 +1,7 @@
+eye_line: 0.08
+name_color: '#d17554'
+poses:
+  b:
+    facing: right
+scale: 0.9
+voice: tomboy

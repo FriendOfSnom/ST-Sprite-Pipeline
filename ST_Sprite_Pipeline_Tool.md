@@ -1,0 +1,115 @@
+# Student Transfer Sprite Pipeline Tool
+
+A cross-platform, interactive pipeline for **downloading**, **sorting**, and **organizing** sprites into a ready-to-use format for the Student Transfer visual Novel.
+
+This suite of tools helps automate the process of collecting raw image data, manually categorizing it, cropping it consistently, and preparing final sprite folders complete with metadata YAML files.
+
+---
+
+## Features
+
+-   Bulk image downloader with resumption and error logging.
+-   Manual sorting helper that guides users to build the correct folder hierarchy.
+-   Interactive crop-and-metadata collection with Tkinter UIs.
+-   Leg/head cropping with remembered cuts.
+-   Eye line, hair color, voice, and scale selection.
+-   Scale matching to reference sprites with real-time comparison.
+-   Generates game-ready folders with consistent naming and metadata.
+-   Windows batch script for one-click setup and launching.
+
+---
+
+## Requirements
+
+-   **Python 3.8 or higher**
+-   Dependencies in `requirements.txt`
+
+## Quick Start (Windows)
+
+Windows users can just run:
+
+```
+start-windows.bat
+```
+
+This will:
+
+1. Create a virtual environment (if it doesn't exist).
+2. Install dependencies.
+3. Launch the interactive pipeline controller.
+
+---
+
+## Typical Workflow
+
+The pipeline consists of **three interactive steps**, which can be run together in one session or separately at any time.
+
+### 1️⃣ Downloader
+
+-   Prompts for a gallery start page URL.
+-   Downloads images to a chosen folder in your OS Downloads directory.
+-   Supports resuming partial downloads and retrying failed links.
+-   Logs all progress and errors.
+
+### 2️⃣ Manual Sorting Helper
+
+-   Prompts for your download folder path.
+-   Opens your system's file explorer to help you organize sprites into:
+
+```
+CharacterFolder/
+    PoseOrOutfit/
+        image1.png
+        image2.png
+```
+
+-   Gives clear instructions on the required structure.
+
+### 3️⃣ Organizer / Finalizer
+
+-   Guides you through:
+
+    -   Auto-cropping transparent padding.
+    -   Cropping below legs and below chin for expressions.
+    -   Reusing previous crop lines with thumbnail previews.
+    -   Selecting eye line ratio by clicking on eyes.
+    -   Picking hair color from the image.
+    -   Choosing voice (girl/boy).
+    -   Adjusting scale relative to reference sprites.
+
+-   Saves finalized folders with:
+
+    -   Outfits and face crops.
+    -   A `character.yml` metadata file per character.
+
+---
+
+## File Layout
+
+```
+project-root/
+├── downloader.py
+├── manual_sort_helper.py
+├── organize_sprites.py
+├── pipeline_runner.py
+├── requirements.txt
+├── start-windows.bat
+├── names.csv
+└── reference_sprites/   <-- (you supply these!)
+```
+
+-   **reference_sprites/** _(required but not included)_
+
+    -   Contains your standard-sized reference sprites and matching `.yml` files.
+    -   Each `.yml` describes eye line and scale for that reference.
+
+---
+
+## Notes & Best Practices
+
+-   You can run the entire pipeline at once or restart from any step using `pipeline_runner.py`.
+-   The Windows batch script is optional but recommended for easy setup and startup each time.
+-   The pipeline is designed to make consistent, game-ready assets from arbitrary online sources.
+-   All user inputs are saved in clearly named folders with consistent structure for easy integration into Student Transfer projects.
+
+---

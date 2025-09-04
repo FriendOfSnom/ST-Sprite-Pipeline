@@ -1,4 +1,4 @@
-# Student Transfer Sprite Pipeline Tool (v1.1.0)
+# Student Transfer Sprite Pipeline Tool (v1.1.1)
 
 A cross-platform, interactive pipeline for **downloading**, **sorting**, **organizing**, **downscaling**, and **documenting** sprites into a ready-to-use format for the Student Transfer visual novel.
 
@@ -6,7 +6,7 @@ This suite of tools automates the process of collecting raw image data, categori
 
 ---
 
-## New in v1.1.0
+## New in v1.1.1
 
 * **Sprite Bulk Downscaler (Step 4)**  
   Downscales finalized sprites to their correct in-game size using a **gamma-aware LANCZOS pipeline** with multi-step quality downscaling.  
@@ -168,7 +168,7 @@ project-root/
 
 ## Changelog
 
-### v1.1.0
+### v1.1.1
 * Added **Bulk Downscaler (Step 4)** for high-quality, in-game downscaling.
 * Improved **Expression Sheet Generator**: sheets saved directly in pose folders, respecting `character.yml` scale.
 * Expanded **Downloader** with ExHentai cookie support, local caching, and adjustable per-image delays.

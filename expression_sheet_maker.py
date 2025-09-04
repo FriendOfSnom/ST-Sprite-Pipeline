@@ -8,12 +8,12 @@ Generates expression sheet PNGs from organized sprite folders.
 Usage:
     python expression_sheet_maker.py /path/to/output_folder
 
-For each character, reads its scale value from character.yml.
-Scales all expressions accordingly.
+For each character, reads its scale value from character.yml and scales all
+expressions accordingly.
 
-Saves sheets to:
+Saves each sheet to the *pose folder* (alongside faces/ and outfits/), e.g.:
 
-    <root>/<character>/expression_sheets/
+    <root>/<character>/<pose>/<pose>_sheet.png
 """
 
 import os
@@ -30,11 +30,10 @@ MIN_GRID_ROWS = 5
 PADDING = 20
 LABEL_HEIGHT = 24
 FONT_SIZE = 32
-OUTPUT_FOLDER_NAME = "expression_sheets"
 
 try:
     DEFAULT_FONT = ImageFont.truetype("arial.ttf", size=FONT_SIZE)
-except:
+except Exception:
     DEFAULT_FONT = ImageFont.load_default()
 
 # -----------------------
@@ -42,7 +41,13 @@ except:
 # -----------------------
 def get_all_pose_paths(root_folder):
     """
-    Traverse the root folder to find all (character, pose, face_images_path) tuples.
+    Find all (character, pose, face_images_path) tuples under the given root.
+
+    Returns:
+        list[tuple[str, str, str]]
+        character: folder name of the character
+        pose:      folder name of the pose (e.g., 'a')
+        face_images_path: full path to <pose>/faces/face
     """
     pose_paths = []
     for character in sorted(os.listdir(root_folder)):
@@ -55,9 +60,9 @@ def get_all_pose_paths(root_folder):
             if not os.path.isdir(pose_path):
                 continue
 
-            face_images_path = os.path.join(pose_path, 'faces', 'face')
+            face_images_path = os.path.join(pose_path, "faces", "face")
             if os.path.isdir(face_images_path):
-                pose_paths.append( (character, pose, face_images_path) )
+                pose_paths.append((character, pose, face_images_path))
 
     return pose_paths
 
@@ -74,16 +79,16 @@ def load_expression_images(face_images_path):
         try:
             return int(base)
         except ValueError:
-            return float('inf')
+            return float("inf")
 
     images = []
     for fname in sorted(os.listdir(face_images_path), key=numeric_key):
-        if fname.lower().endswith(('.png', '.webp', '.jpg', '.jpeg')):
+        if fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
             path = os.path.join(face_images_path, fname)
             try:
-                img = Image.open(path).convert('RGBA')
+                img = Image.open(path).convert("RGBA")
                 label = os.path.splitext(fname)[0]
-                images.append( (label, img) )
+                images.append((label, img))
             except Exception as e:
                 print(f"[WARN] Couldn't load image {path}: {e}")
     return images
@@ -95,6 +100,12 @@ def calculate_sheet_size(image_size, count):
     """
     Given one sample image size and number of images,
     compute total (width, height) for the grid canvas.
+
+    Args:
+        image_size: (w, h) of a single expression image
+        count:      number of expressions
+    Returns:
+        (total_width, total_height, rows)
     """
     img_w, img_h = image_size
     cols = GRID_COLUMNS
@@ -110,16 +121,22 @@ def calculate_sheet_size(image_size, count):
 # -----------------------
 def draw_expression_sheet(character, pose, images, output_path):
     """
-    Generate a single expression sheet PNG for a pose.
+    Generate a single expression sheet PNG for a pose and save to output_path.
+
+    Args:
+        character: character folder name (for logging only)
+        pose:      pose folder name (e.g., 'a')
+        images:    list[(label, PIL.Image)]
+        output_path: full path to write the sheet PNG
     """
     if not images:
         print(f"[WARN] Skipping {character}/{pose}: no images found.")
         return
 
     sample_w, sample_h = images[0][1].size
-    sheet_w, sheet_h, grid_rows = calculate_sheet_size((sample_w, sample_h), len(images))
+    sheet_w, sheet_h, _ = calculate_sheet_size((sample_w, sample_h), len(images))
 
-    sheet = Image.new('RGBA', (sheet_w, sheet_h), color=(255, 255, 255, 255))
+    sheet = Image.new("RGBA", (sheet_w, sheet_h), color=(255, 255, 255, 255))
     draw = ImageDraw.Draw(sheet)
 
     for idx, (label, img) in enumerate(images):
@@ -131,16 +148,16 @@ def draw_expression_sheet(character, pose, images, output_path):
 
         sheet.paste(img, (x, y))
 
+        # Center the label under the image
+        text = f"{pose}_{label}"
         text_y = y + sample_h
         text_x_center = x + sample_w // 2
-        text = f"{pose}_{label}"
-
         if DEFAULT_FONT:
             bbox = draw.textbbox((0, 0), text, font=DEFAULT_FONT)
             text_w = bbox[2] - bbox[0]
-            draw.text((text_x_center - text_w // 2, text_y), text, fill='black', font=DEFAULT_FONT)
+            draw.text((text_x_center - text_w // 2, text_y), text, fill="black", font=DEFAULT_FONT)
         else:
-            draw.text((text_x_center, text_y), text, fill='black')
+            draw.text((text_x_center, text_y), text, fill="black")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     sheet.save(output_path)
@@ -150,6 +167,10 @@ def draw_expression_sheet(character, pose, images, output_path):
 # Main Function
 # -----------------------
 def main():
+    """
+    Walk the output root, read per-character scale, build a sheet for each pose,
+    and save the sheet next to that pose's faces/ and outfits/ folders.
+    """
     if len(sys.argv) < 2:
         print("Usage: python expression_sheet_maker.py /path/to/output_folder")
         sys.exit(1)
@@ -170,24 +191,20 @@ def main():
         characters.setdefault(character, []).append((pose, face_path))
 
     for character, poses in characters.items():
-        # Load scale from character.yml
+        # Load scale from character.yml (default 1.0)
         char_folder = os.path.join(root_folder, character)
         yml_path = os.path.join(char_folder, "character.yml")
         scale = 1.0
-
         if os.path.isfile(yml_path):
             try:
                 with open(yml_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
+                    data = yaml.safe_load(f) or {}
                 scale = float(data.get("scale", 1.0))
                 print(f"[INFO] Character {character} using scale: {scale}")
             except Exception as e:
                 print(f"[WARN] Could not read scale from {yml_path}: {e}")
 
-        # Make character-level expression_sheets/ folder
-        out_root = os.path.join(char_folder, OUTPUT_FOLDER_NAME)
-        os.makedirs(out_root, exist_ok=True)
-
+        # Build each pose's sheet and save it *in that pose's folder*
         for pose, face_path in poses:
             images = load_expression_images(face_path)
             if not images:
@@ -202,8 +219,11 @@ def main():
                     img = img.resize((new_w, new_h), Image.LANCZOS)
                 scaled_images.append((label, img))
 
-            out_name = f"{pose}_sheet.png"
-            out_path = os.path.join(out_root, out_name)
+            # face_path is .../<character>/<pose>/faces/face
+            # Pose folder is two levels up from that
+            pose_folder = os.path.dirname(os.path.dirname(face_path))
+            out_path = os.path.join(pose_folder, f"{pose}_sheet.png")
+
             draw_expression_sheet(character, pose, scaled_images, out_path)
 
     print("\n[INFO] All expression sheets generated successfully.")

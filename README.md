@@ -151,7 +151,7 @@ project-root/
 ├── start-windows.bat
 ├── start-mac.command
 ├── names.csv
-└── reference_sprites/   <-- supply your own
+└── reference_sprites/
 ```
 
 ---

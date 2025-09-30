@@ -125,6 +125,28 @@ def _sanitize_filename(s: str) -> str:
     s = re.sub(r"[^\w\-\.]+", "_", s)
     return s.strip("._") or "img"
 
+def _sanitize_folder_name(name: str) -> str:
+    """
+    Make a safe folder name (Windows/macOS/Linux).
+    """
+    name = re.sub(r'[<>:"/\\|?*]+', "_", name).strip()
+    return name.strip(" ._") or "untitled"
+
+def _unique_child_dir(parent: pathlib.Path, desired: str) -> pathlib.Path:
+    """
+    Ensure a unique child directory under parent, appending _2, _3, ...
+    """
+    base = parent / desired
+    if not base.exists():
+        return base
+    i = 2
+    while True:
+        cand = parent / f"{desired}_{i}"
+        if not cand.exists():
+            return cand
+        i += 1
+
+
 
 # ----------------------------------------------------------------------
 # Network helpers
@@ -414,16 +436,17 @@ def run_downloader(output_dir: pathlib.Path, start_url: str, cookies: Optional[D
 def run_downloader_interactive() -> str:
     """
     Interactive CLI entry point.
-    Prompts the user for a folder name, start URL, cookies (if needed), and optional per-image delay.
+    Prompts for a game/forum title (used as the folder name),
+    start URL, cookies (if needed), and optional per-image delay.
     Returns the output directory path as a string for pipeline integration.
     """
     print("=" * 60)
     print(" E-HENTAI / EXHENTAI BULK SPRITE DOWNLOADER ")
     print("=" * 60)
 
-    folder_name = input("\nEnter a folder name for saving images (in your Downloads folder):\n> ").strip()
-    if not folder_name:
-        print("\nERROR: Folder name cannot be empty.")
+    title = input("\nEnter the game/forum post title (this becomes the folder name):\n> ").strip()
+    if not title:
+        print("\nERROR: Title cannot be empty.")
         sys.exit(1)
 
     start_url = input("\nEnter the starting image page URL (from e-hentai OR exhentai):\n> ").strip()
@@ -475,13 +498,33 @@ Option B: Enter individual fields
             sys.exit(1)
 
     downloads_folder = get_downloads_folder()
-    output_dir = downloads_folder / folder_name
+    folder_name = _sanitize_folder_name(title)
+    output_dir = _unique_child_dir(downloads_folder, folder_name)
+
+    # Create the folder now and drop a tiny metadata file for later steps
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = output_dir / "download_meta.json"
+    try:
+        with meta_path.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "source_game": title,
+                    "start_url": start_url,
+                    "created_at_unix": int(time.time())
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception as e:
+        print(f"[WARN] Could not write download_meta.json: {e}")
 
     run_downloader(output_dir, start_url, cookies=cookies, delay_override=delay_override)
 
     print("\n[INFO] Download step complete.")
     print("=" * 60)
     return str(output_dir)
+
 
 
 if __name__ == "__main__":

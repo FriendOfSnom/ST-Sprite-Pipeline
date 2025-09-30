@@ -168,6 +168,27 @@ if ! check_tk_with_pillow "python"; then
   echo "Continuing to launch; the app will install/use Pillow from requirements."
 fi
 
+# --- Optional: point the pipeline at a bundled upscaler binary
+ESRGAN_DIR="$SCRIPT_DIR/Mac_Helper/realesrgan"
+ESRGAN_BIN="$ESRGAN_DIR/realesrgan-ncnn-vulkan"
+
+if [[ -x "$ESRGAN_BIN" ]]; then
+  export REAL_ESRGAN_BIN="$ESRGAN_BIN"
+  echo "Found bundled upscaler: $REAL_ESRGAN_BIN"
+elif [[ -f "$ESRGAN_BIN" ]]; then
+  # Ensure it's executable on first run
+  chmod +x "$ESRGAN_BIN" || true
+  if [[ -x "$ESRGAN_BIN" ]]; then
+    export REAL_ESRGAN_BIN="$ESRGAN_BIN"
+    echo "Prepared bundled upscaler: $REAL_ESRGAN_BIN"
+  else
+    echo "Bundled upscaler not executable yet (optional). Downscale-only runs will still work."
+  fi
+else
+  echo "Bundled upscaler not found (optional). Downscale-only runs will still work."
+fi
+echo
+
 # --- Launch
 print_header "Launching the pipeline controller"
 python pipeline_runner.py

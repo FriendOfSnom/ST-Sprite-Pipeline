@@ -21,6 +21,7 @@ import shutil
 import string
 import random
 import csv
+import json
 from pathlib import Path
 import yaml
 import tkinter as tk
@@ -819,16 +820,11 @@ def confirm_character(image_paths):
 # -----------------------
 # YAML Writer
 # -----------------------
-def write_character_yml(path, display_name, voice, eye_line, hair_color, scale, poses):
+def write_character_yml(path, display_name, voice, eye_line, hair_color, scale, poses, *, game=None):
     """
     Writes the final character metadata to a YAML file.
-
-    Notes:
-        - Engine compatibility: if the user selected "boy" in the UI,
-          we map it to "male" in the YAML output.
-        - Other values (e.g., "girl") are written as-is.
+    Adds `game` without changing existing behavior.
     """
-    # Map UI voice to engine voice
     v = (voice or "").lower()
     voice_out = "male" if v == "boy" else voice
 
@@ -840,10 +836,10 @@ def write_character_yml(path, display_name, voice, eye_line, hair_color, scale, 
         "scale": scale,
         "voice": voice_out,
     }
+    if game:
+        data["game"] = game
 
-    # Ensure parent exists (safe if already created)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, sort_keys=False, allow_unicode=True)
 
@@ -861,6 +857,20 @@ def run_organizer(workspace_input, output_input):
     workspace_dir = Path(workspace_input)
     output_dir = Path(output_input)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine source game from downloader metadata if available
+    game_name = "_unknown_game"
+    meta_path = workspace_dir / "download_meta.json"
+    if meta_path.exists():
+        try:
+            with meta_path.open("r", encoding="utf-8") as f:
+                meta = json.load(f) or {}
+            g = (meta.get("source_game") or "").strip()
+            if g:
+                game_name = g
+        except Exception as e:
+            print(f"[WARN] Could not read download_meta.json: {e}")
+    print(f"[INFO] Using game name for character.yml: {game_name}")
 
     girl_names, boy_names = load_name_pool("names.csv")
     letter_labels = list(string.ascii_lowercase)
@@ -1001,7 +1011,16 @@ def run_organizer(workspace_input, output_input):
                 scale = 1.0
 
             yml_path = char_output / "character.yml"
-            write_character_yml(yml_path, display_name, voice, eye_line, hair_color, scale, poses_yaml)
+            write_character_yml(
+                yml_path,
+                display_name,
+                voice,
+                eye_line,
+                hair_color,
+                scale,
+                poses_yaml,
+                game=game_name
+            )
             print(f"[INFO] Created metadata: {yml_path}")
 
             break

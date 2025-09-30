@@ -200,9 +200,14 @@ def main():
                 with open(yml_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 scale = float(data.get("scale", 1.0))
-                print(f"[INFO] Character {character} using scale: {scale}")
+                # If the downscaler already normalized images in place,
+                # we avoid scaling a second time on the sheet.
+                if "original_scale" in (data or {}):
+                    scale = 1.0
+                print(f"[INFO] Character {character} using sheet scale: {scale}")
             except Exception as e:
                 print(f"[WARN] Could not read scale from {yml_path}: {e}")
+
 
         # Build each pose's sheet and save it *in that pose's folder*
         for pose, face_path in poses:

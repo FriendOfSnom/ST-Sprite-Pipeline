@@ -36,9 +36,9 @@ USER_AGENT = (
 )
 DEFAULT_DOWNLOAD_DELAY = 0.25
 RETRY_COUNT = 2
-RETRY_DELAY = 5
-HTTP_TIMEOUT = 30
-IMG_TIMEOUT = 90
+RETRY_DELAY = 0
+HTTP_TIMEOUT = (5,8)
+IMG_TIMEOUT = (5,10)
 
 CONFIG_DIRNAME = ".st_sprite_tool"
 CONFIG_FILENAME = "auth.json"
@@ -170,7 +170,8 @@ def _session_with_headers(referer: str) -> requests.Session:
 
 def _get_with_retries(session: requests.Session, url: str, description: str, timeout: int) -> Optional[requests.Response]:
     """
-    Fetches the given URL with retry logic and returns the response (or None).
+    Fetch the given URL with up to RETRY_COUNT attempts. We do NOT pause between
+    attempts (RETRY_DELAY=0 by default) so a failure is retried immediately.
     """
     for attempt in range(1, RETRY_COUNT + 1):
         try:
@@ -179,7 +180,9 @@ def _get_with_retries(session: requests.Session, url: str, description: str, tim
             return resp
         except Exception as e:
             print(f"[WARN] Attempt {attempt}/{RETRY_COUNT} failed for {description}: {e}")
-            time.sleep(RETRY_DELAY)
+            # Instant retry: only sleep if a nonzero RETRY_DELAY is configured
+            if attempt < RETRY_COUNT and RETRY_DELAY > 0:
+                time.sleep(RETRY_DELAY)
     print(f"[ERROR] All retries failed for {description}.")
     return None
 
@@ -415,7 +418,6 @@ def run_downloader(output_dir: pathlib.Path, start_url: str, cookies: Optional[D
             except ValueError:
                 continue
             process_image(idx, url, failed_final_file)
-            time.sleep(per_image_delay)
 
         print("\n[INFO] Retry pass complete. Check failed_final.txt for any remaining issues.")
     else:

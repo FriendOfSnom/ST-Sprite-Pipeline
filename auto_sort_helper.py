@@ -64,12 +64,12 @@ CONFIG = {
     "ENABLE_OUTFIT": False,
 
     # Hair band sampling (fractions of face box height/width)
-    "HAIR_BAND_TOP": 0.45,         # farthest above face top
-    "HAIR_BAND_BOTTOM": 0.10,      # nearest above face top
-    "HAIR_BAND_PAD_X": 0.06,       # widen band horizontally by % face width
+    "HAIR_BAND_TOP": 0.40,         # farthest above face top
+    "HAIR_BAND_BOTTOM": 0.12,      # nearest above face top
+    "HAIR_BAND_PAD_X": 0.04,       # widen band horizontally by % face width
 
-    "HAIR_SAMPLES": 600,           # deterministic pseudo-random samples in band
-    "BG_DELTA_RGB": 8,             # drop samples too close to background (per-channel)
+    "HAIR_SAMPLES": 800,           # deterministic pseudo-random samples in band
+    "BG_DELTA_RGB": 10,             # drop samples too close to background (per-channel)
     "DROP_NEAR_WHITE": 245,        # drop highlights (all channels >= this)
     
     # character post-merge
@@ -77,12 +77,12 @@ CONFIG = {
     "CHAR_ABSORB_DELTAE": 24.0,   # ...gets absorbed into nearest big one if ΔE <= this
     
     # hair sampling refinement
-    "HAIR_MIN_SAT": 4,           # drop low-saturation samples (0..255 scale)
+    "HAIR_MIN_SAT": 12,           # drop low-saturation samples (0..255 scale)
 
     # Character clustering (simple RGB distance)
     "CHAR_DELTAE_THRESH": 12.0,     # ≈ gentle tolerance in Lab
     "CHAR_SMALL_JOIN": 16.5,        # allow tiny clusters to merge
-    "HAIR_QUANT": 5,                # quantize Lab to 6 steps per channel for stability
+    "HAIR_QUANT": 8,                # quantize Lab to 6 steps per channel for stability
 
 
     # Pose clustering (fallback silhouette-PCA angles; replace later with keypoints)
@@ -102,6 +102,10 @@ CONFIG = {
 
     # File types considered images
     "IMAGE_EXTS": {".png", ".jpg", ".jpeg", ".webp", ".bmp"},
+
+    # Debug helpers
+    "DEBUG_HAIR_PER_IMAGE": True,   # one line per image with hair Lab & label
+    "DEBUG_HAIR_SAMPLER": False,     # one liner from inside _sample_hair_rgb
 }
 
 
@@ -198,8 +202,9 @@ def _label_hair_lab(lab: Tuple[float, float, float]) -> str:
     C = _ab_chroma(lab)
     if (C < 10.0) and (L > 72.0):
         return "white"
-    if (L > 50.0) and (b > 6.0) and (C >= 8.0) and (C <= 45.0) and (a > -6.0) and (a <= 28.0):
+    if (L > 50.0) and (b > 6.0) and (C >= 8.0) and (C <= 60.0) and (a > -6.0) and (a <= 36.0):
         return "blonde"
+
     return "other"
 
 
@@ -394,8 +399,8 @@ def _sample_hair_rgb(img_bgr: np.ndarray, face: Tuple[int,int,int,int], bg_rgb: 
     temple_w = max(1, int(round(0.10 * w)))
     lx0 = max(0, x - int(round(0.15 * w))); lx1 = min(W, lx0 + temple_w)
     rx1 = min(W, x + w + int(round(0.15 * w))); rx0 = max(0, rx1 - temple_w)
-    samples += _collect_from_rect(lx0, ty0, lx1, ty1, None, n_samples // 2)
-    samples += _collect_from_rect(rx0, ty0, rx1, ty1, None, n_samples // 2)
+    samples += _collect_from_rect(lx0, ty0, lx1, ty1, None, n_samples // 4)
+    samples += _collect_from_rect(rx0, ty0, rx1, ty1, None, n_samples // 4)
 
     if not samples:
         return None
@@ -405,6 +410,13 @@ def _sample_hair_rgb(img_bgr: np.ndarray, face: Tuple[int,int,int,int], bg_rgb: 
 
     # Trim by chroma to drop extreme highlights/shadows
     labs = labs_all.copy()
+    
+    # Additional guard: drop ultra-low-chroma (C*ab < 6) samples that often come from halos
+    C_full = np.hypot(labs[:,1], labs[:,2])
+    keep_c = C_full >= 6.0
+    if keep_c.any():
+        labs = labs[keep_c]
+
     chroma = np.hypot(labs[:,1], labs[:,2])
     if labs.shape[0] >= 20:
         lo = np.percentile(chroma, 15.0)
@@ -424,7 +436,7 @@ def _sample_hair_rgb(img_bgr: np.ndarray, face: Tuple[int,int,int,int], bg_rgb: 
     n_yellow_all = int(yellowish_mask_all.sum())
 
     # If there’s a meaningful blonde signal, bias to it
-    if n_yellow_all >= max(15, int(0.08 * labs_all.shape[0])):  # ≥15 px or ≥8%
+    if n_yellow_all >= max(12, int(0.06 * labs_all.shape[0])):  # ≥12 px or ≥6%
         labs = labs_all[yellowish_mask_all]
         if labs.shape[0] >= 20:
             Cb = np.hypot(labs[:,1], labs[:,2])
@@ -448,6 +460,21 @@ def _sample_hair_rgb(img_bgr: np.ndarray, face: Tuple[int,int,int,int], bg_rgb: 
     L, a, b = med
     lab_img = np.array([[[L * (255.0/100.0), a + 128.0, b + 128.0]]], dtype=np.float32)
     bgr = cv2.cvtColor(lab_img.astype(np.uint8), cv2.COLOR_Lab2BGR)[0,0]
+    
+    if CONFIG.get("DEBUG_HAIR_SAMPLER", False):
+        # counts on sampled pixels before/after blonde bias
+        C_all = np.hypot(labs_all[:,1], labs_all[:,2])
+        L_all = labs_all[:,0]
+        pct = lambda arr,p: float(np.percentile(arr, p)) if arr.size else float('nan')
+        print(
+            "HAUD",
+            f"n_all={labs_all.shape[0]}",
+            f"L50={pct(L_all,50):.1f}",
+            f"C50={pct(C_all,50):.1f}",
+            f"yellowish={int(yellowish_mask_all.sum())}",
+            f"picked_n={labs.shape[0]}",
+        )
+
     return (int(bgr[2]), int(bgr[1]), int(bgr[0]))
 
 
@@ -838,8 +865,7 @@ def _final_blonde_merge(clusters):
         # - light-ish
         # - yellowish tilt (b positive), allow warm a (up to ~30)
         # - not white (C >= ~6) and not vivid (C <= ~55)
-        return (L >= 48.0) and (b > 5.0) and (-5.0 <= a <= 30.0) and (6.0 <= C <= 55.0)
-
+        return (L >= 48.0) and (b > 5.0) and (-5.0 <= a <= 36.0) and (6.0 <= C <= 60.0)
     # Step A: pairwise cleanup of very close blondes
     changed = True
     while changed:
@@ -979,32 +1005,55 @@ def _is_blonde_candidate_pixel_lab(lab: Tuple[float,float,float]) -> bool:
 def _rescue_blondeish_from_white(
     clusters: List[Tuple[Tuple[float,float,float], List['ImgInfo']]]
 ) -> List[Tuple[Tuple[float,float,float], List['ImgInfo']]]:
+    """
+    Safely rescue blown-out blonde items from bright/low-chroma 'white-like' clusters
+    without stealing from true white/silver characters.
+
+    Rules (per item):
+      - Item itself must NOT be white-ish.
+      - Item must look blonde-tilted (per-pixel test).
+      - Destination centroid must be blonde-ish.
+      - Destination must beat white-like by a margin (>= 2.5) and be absolutely close (<= 22.0).
+    """
     if not clusters:
         return clusters
 
-    # Identify white-ish cluster indices
-    white_idxs = [i for i,(c,_) in enumerate(clusters) if _is_whiteish_lab(c)]
+    # Treat very bright, low-chroma centroids as 'white-like' for this rescue pass only.
+    def _is_white_like_centroid(c: Tuple[float,float,float]) -> bool:
+        L, a, b = c
+        C = math.hypot(a, b)
+        return (L > 72.0) and (C < 14.0)  # broader than _is_whiteish_lab(C<10), but only for this pass
+
+    white_idxs = [i for i, (c, _) in enumerate(clusters) if _is_white_like_centroid(c)]
     nonwhite_idxs = [i for i in range(len(clusters)) if i not in white_idxs]
     if not white_idxs or not nonwhite_idxs:
         return clusters
 
     # Precompute non-white centroids
-    nonwhite_cents = {i: clusters[i][0] for i in nonwhite_idxs}
+    nonwhite_cents: Dict[int, Tuple[float,float,float]] = {i: clusters[i][0] for i in nonwhite_idxs}
 
     moved_any = False
     for wi in white_idxs:
         c_white, g_white = clusters[wi]
-        keep_list, move_list = [], []
+        keep_list: List[ImgInfo] = []
+        move_list: List[Tuple[ImgInfo, int]] = []
+
         for inf in g_white:
             if inf.hair_rgb is None:
                 keep_list.append(inf)
                 continue
+
             lab = _rgb_to_lab(inf.hair_rgb)
-            if not _is_blonde_candidate_pixel_lab(lab):
+
+            # HARD GUARDS: don't move true white/silver; only rescue blonde-tilted items
+            if _is_whiteish_lab(lab):                 # item itself looks white/silver
+                keep_list.append(inf)
+                continue
+            if not _is_blonde_candidate_pixel_lab(lab):  # not yellow-tilted blonde-ish
                 keep_list.append(inf)
                 continue
 
-            # Compare distance to white vs best non-white
+            # Distances: white-like centroid vs best non-white centroid
             d_white = _lab_hue_chroma_dist(lab, c_white)
             best_j, best_d = None, 1e9
             for j, c in nonwhite_cents.items():
@@ -1012,31 +1061,37 @@ def _rescue_blondeish_from_white(
                 if d < best_d:
                     best_d, best_j = d, j
 
-            # Require a clear margin to move out of white
-            # e.g., if best non-white is at least 4.0 "units" closer than white
-            if best_j is not None and (d_white - best_d) >= 4.0:
+            # Destination must be blonde-ish too (prevents jumping into green/purple, etc.)
+            if best_j is None or not _is_blondeish_lab(nonwhite_cents[best_j]):
+                keep_list.append(inf)
+                continue
+
+            # Require clear margin and a sane absolute distance
+            if (d_white - best_d) >= 2.5 and best_d <= 22.0:
                 move_list.append((inf, best_j))
             else:
                 keep_list.append(inf)
 
-        # apply moves
+        # Apply moves (if any) and update the white-like cluster in place
         if move_list:
             moved_any = True
-            clusters[wi] = (c_white, keep_list)
+            clusters[wi] = (c_white, keep_list)  # write back remaining members
             for inf, j in move_list:
                 clusters[j][1].append(inf)
 
     if moved_any:
-        # Recompute centroids after moves and drop empties
+        # Recompute centroids and drop empties
         new_clusters: List[Tuple[Tuple[float,float,float], List['ImgInfo']]] = []
-        for c,g in clusters:
+        for c, g in clusters:
             if not g:
                 continue
             arr = np.array([_rgb_to_lab(x.hair_rgb) for x in g if x.hair_rgb is not None], dtype=np.float32)
             new_c = tuple(np.mean(arr, axis=0)) if arr.size else c
             new_clusters.append((new_c, g))
         return new_clusters
+
     return clusters
+
 
 def _final_hue_prox_merge(
     clusters,
@@ -1281,37 +1336,45 @@ def _cluster_by_character(infos: List[ImgInfo]) -> Dict[int, List[ImgInfo]]:
         clusters.append((tuple(np.mean(arr, axis=0)), grp))
 
     # 5) Merge whites split by lighting
-clusters = _final_low_chroma_merge(clusters)
+    clusters = _final_low_chroma_merge(clusters)
 
-# 5.5) Split pale blonde out of “white”, if present
-clusters = _split_white_clusters_to_pale_blonde(
-    clusters, min_size=CONFIG["CHAR_MIN_CLUSTER"], min_fraction=0.08
-)
+    # 5.5) Split pale blonde out of “white”, if present
+    clusters = _split_white_clusters_to_pale_blonde(
+        clusters, min_size=CONFIG["CHAR_MIN_CLUSTER"], min_fraction=0.08
+    )
 
-# 6) Merge close blondes
-clusters = _final_blonde_merge(clusters)
+    # 6) Merge close blondes
+    clusters = _final_blonde_merge(clusters)
 
-# 6.1) NEW: generic hue-aware merge for any chromatic hair family
-clusters = _final_hue_prox_merge(
-    clusters,
-    hue_tol_deg=24.0,
-    dist_tol=16.0,
-    min_chroma=10.0,
-)
+    # 6.1) NEW: generic hue-aware merge for any chromatic hair family
+    clusters = _final_hue_prox_merge(
+        clusters,
+        hue_tol_deg=24.0,
+        dist_tol=16.0,
+        min_chroma=10.0,
+    )
 
-# 7) Rescue blondes from white; then expel non-white from white
-clusters = _rescue_blondeish_from_white(clusters)
-clusters = _expel_nonwhite_from_white_clusters(clusters)
+    # 7) Rescue blondes from white; then expel non-white from white
+    clusters = _rescue_blondeish_from_white(clusters)
+    clusters = _expel_nonwhite_from_white_clusters(clusters)
 
 
     # DEBUG once
     for idx, (c, g) in enumerate(clusters):
         L, a, b = c
-        count_whiteish = sum(
-            1 for inf in g
-            if (inf.hair_rgb is not None and _is_whiteish_lab(_rgb_to_lab(inf.hair_rgb)))
+        C = math.hypot(a, b)
+        lbl_counts = {"white": 0, "blonde": 0, "other": 0}
+        for inf in g:
+            if inf.hair_rgb is None:
+                continue
+            lab = _rgb_to_lab(inf.hair_rgb)
+            lbl_counts[_label_hair_lab(lab)] += 1
+        
+        hue = (math.degrees(math.atan2(b, a)) + 360.0) % 360.0
+        print(
+            f"[char cluster {idx}] n={len(g)}  L={L:.1f} a={a:.1f} b={b:.1f} hue={hue:.1f}° "
+            f"C={C:.1f}  white={lbl_counts['white']} blonde={lbl_counts['blonde']} other={lbl_counts['other']}"
         )
-        print(f"[char cluster {idx}] n={len(g)}  L={L:.1f} a={a:.1f} b={b:.1f}  whiteish_items={count_whiteish}")
 
 
     out: Dict[int, List[ImgInfo]] = {}
@@ -1582,6 +1645,17 @@ def main():
                 fg_mask=mask,  # << important
             )
             info.hair_rgb = hair
+
+            if CONFIG["DEBUG_HAIR_PER_IMAGE"]:
+                if hair is None:
+                    print(f"[hair] {info.path.name}: NONE")
+                else:
+                    L, a, b = _rgb_to_lab(hair)
+                    C = math.hypot(a, b)
+                    print(
+                        f"[hair] {info.path.name}: RGB={hair}  L={L:.1f} a={a:.1f} b={b:.1f} C={C:.1f}  label={_label_hair_lab((L,a,b))}"
+                    )
+
 
         # Outfit ray signature (only if bbox exists)
         if bbox is not None:

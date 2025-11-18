@@ -1,40 +1,25 @@
 #!/usr/bin/env python3
 """
-gemini_sprite_pipeline.py (refactored)
+gemini_sprite_pipeline.py (refactored + prompt mode)
 
-End-to-end Student Transfer style sprite builder:
+Changes in this version:
 
-- Input: folder with one image per character (source art).
-- For each image:
-  1) Tk window:
-     - Preview source art.
-     - Choose voice (Girl/Boy).
-     - Auto-assign random name from names.csv (editable).
-     - Choose archetype (young woman, adult man, etc.).
-  2) Gemini:
-     - Pose a: normalized base (mid-thigh, green background, background removed).
-     - Pose b: new pose (Tk review: accept / regenerate / cancel).
-     - Pose c: gender-bent pose (Tk review; gender-bent archetype via Tk).
-  3) For each pose:
-     - Generate outfits (Base/Formal/Casual), then Tk review per pose.
-     - For each outfit in that pose:
-         - Generate full expression set, then Tk review per outfit.
-  4) After all poses:
-     - Eye line + name color selection.
-     - Scale vs reference selection.
-     - Flatten pose+outfit combos into single-outfit letter poses (a,b,c,...).
-     - Write character.yml in the character folder.
+- Improved background remover to:
+  * Better remove tiny green pockets inside hair/arms, and
+  * Reduce green "halos" along the edges
+  without eating legitimate character pixels.
 
-Final folder layout per character (after flattening):
+- Added an initial Tk "source mode" dialog:
+  * "Generate from an image" -> use file chooser to pick a single image.
+  * "Generate from a text prompt" -> describe a character concept and archetype,
+    then Gemini generates a new base sprite using reference sprites.
 
-<output_root>/<DisplayName>/
-    a/outfits/outfit.webp       (transparent)
-    a/faces/face/0.webp ... 4.webp
+- The rest of the pipeline for a character (poses, outfits, expressions,
+  eye-line, scale, character.yml, flattening) is unchanged.
 
-    b/...
-    c/...
-
-    character.yml
+NOTE: Gender-bent sprites are still generated as Pose C within the same
+character folder. In a future step we can refactor that into a separate
+character folder if desired.
 """
 
 import argparse
@@ -54,7 +39,7 @@ import requests
 from rembg import remove
 from PIL import Image, ImageTk
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import yaml
 import webbrowser
 
@@ -261,24 +246,21 @@ def save_image_bytes_as_webp(image_bytes: bytes, dest_stem: Path) -> Path:
 
 def strip_background(image_bytes: bytes) -> bytes:
     """
-    Remove the background using rembg, then (optionally) do two cleanup passes:
+    Remove the background using rembg, then do two cleanup passes:
 
       1) Halo removal: delete pixels very close to the *original* flat green
-         background color that sit right next to transparency (kills green fringe).
+         background color that sit right next to transparency (kills green fringe)
+         but keep this threshold fairly tight so we do not eat green clothing.
+
       2) Interior island removal: delete small enclosed blobs of pixels that are
-         very close to that background color but surrounded by the character
+         close to the background color but surrounded by the character
          (kills tiny pockets inside hair/arms/etc).
 
     If we *cannot* confidently detect a flat green-ish background on the original
     image, we just return rembg's result without the extra cleanup to avoid
     chewing into dark features like eyes/hair.
     """
-    from io import BytesIO
-    from rembg import remove
-    from PIL import Image
-
     try:
-        # --- Step 0: Inspect the ORIGINAL image to detect a flat green screen ---
         orig = Image.open(BytesIO(image_bytes)).convert("RGBA")
         ow, oh = orig.size
         opix = orig.load()
@@ -336,7 +318,8 @@ def strip_background(image_bytes: bytes) -> bytes:
             return dr * dr + dg * dg + db * db
 
         # --- Step 2: halo cleanup along transparency edges (targets green fringe) ---
-        halo_threshold_sq = 40.0 ** 2  # only pixels very close to the bg color
+        # Slightly *tighter* than before to avoid eating near-green outfit colors.
+        halo_threshold_sq = 32.0 ** 2  # only pixels very close to the bg color
         to_clear = []
         max_radius = 1  # just immediate neighbors
 
@@ -367,8 +350,10 @@ def strip_background(image_bytes: bytes) -> bytes:
             pixels[x, y] = (r, g, b, 0)
 
         # --- Step 3: small enclosed islands of bg color inside the character ---
-        island_threshold_sq = 45.0 ** 2
-        tiny_island_size = max(10, (width * height) // 2000)
+        # We allow a slightly *looser* color match here so we catch more
+        # tiny pockets inside the hair, but still limit to small blobs.
+        island_threshold_sq = 60.0 ** 2
+        tiny_island_size = max(20, (width * height) // 4000)
         tiny_island_size = min(tiny_island_size, 800)
 
         bg_like = [[False] * width for _ in range(height)]
@@ -504,6 +489,21 @@ def get_api_key() -> str:
     return interactive_api_key_setup()
 
 
+def _extract_inline_image_from_response(data: dict) -> Optional[bytes]:
+    """
+    Internal helper to pull the first inline image bytes from a Gemini JSON response.
+    Returns raw PNG bytes or None.
+    """
+    candidates = data.get("candidates", [])
+    for cand in candidates:
+        content = cand.get("content", {})
+        for part in content.get("parts", []):
+            blob = part.get("inlineData") or part.get("inline_data")
+            if blob and "data" in blob:
+                return base64.b64decode(blob["data"])
+    return None
+
+
 def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
     """
     Call the Gemini image model with a text prompt and a single input image.
@@ -531,7 +531,6 @@ def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
         try:
             resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
             if not resp.ok:
-                # For rate limit and server errors, retry. For hard client errors, fail fast.
                 if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
                     print(
                         f"[WARN] Gemini API error {resp.status_code} on attempt {attempt}; "
@@ -542,16 +541,10 @@ def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
                 raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
 
             data = resp.json()
-            candidates = data.get("candidates", [])
-            for cand in candidates:
-                content = cand.get("content", {})
-                for part in content.get("parts", []):
-                    blob = part.get("inlineData") or part.get("inline_data")
-                    if blob and "data" in blob:
-                        raw_bytes = base64.b64decode(blob["data"])
-                        return strip_background(raw_bytes)
+            raw_bytes = _extract_inline_image_from_response(data)
+            if raw_bytes is not None:
+                return strip_background(raw_bytes)
 
-            # If we get here, the response parsed but contained no image bytes.
             last_error = "No image data found in Gemini response."
             if attempt < max_retries:
                 print(
@@ -570,6 +563,83 @@ def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
                 f"Gemini call failed after {max_retries} attempts: {last_error}"
             )
 
+
+def call_gemini_text_or_refs(
+    api_key: str,
+    prompt: str,
+    ref_images: Optional[List[Path]] = None,
+) -> bytes:
+    """
+    Call Gemini with a pure text prompt plus optional reference images.
+
+    This is used for "generate from prompt" mode:
+      - prompt: full text prompt for the character concept.
+      - ref_images: list of reference sprite paths to anchor the art style.
+
+    Returns PNG bytes (with background stripped) from the first candidate.
+    """
+    parts: List[dict] = [{"text": prompt}]
+
+    if ref_images:
+        for path in ref_images:
+            try:
+                img = Image.open(path).convert("RGBA")
+            except Exception as e:
+                print(f"[WARN] Skipping reference sprite {path}: {e}")
+                continue
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            data_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            parts.append(
+                {
+                    "inline_data": {
+                        "mime_type": "image/png",
+                        "data": data_b64,
+                    }
+                }
+            )
+
+    payload = {"contents": [{"parts": parts}]}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
+            if not resp.ok:
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    print(
+                        f"[WARN] Gemini API error {resp.status_code} on attempt {attempt}; "
+                        "retrying..."
+                    )
+                    last_error = f"Gemini API error {resp.status_code}: {resp.text}"
+                    continue
+                raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
+
+            data = resp.json()
+            raw_bytes = _extract_inline_image_from_response(data)
+            if raw_bytes is not None:
+                return strip_background(raw_bytes)
+
+            last_error = "No image data found in Gemini response for text+refs."
+            if attempt < max_retries:
+                print(
+                    f"[WARN] Gemini returned no image data on attempt {attempt}; "
+                    "retrying..."
+                )
+                continue
+            raise RuntimeError(last_error)
+
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                print(f"[WARN] Gemini call failed on attempt {attempt}; retrying: {e}")
+                continue
+            raise RuntimeError(
+                f"Gemini call failed after {max_retries} attempts: {last_error}"
+            )
 
 
 # =========================
@@ -604,6 +674,17 @@ GENDER_ARCHETYPES = [
 ]
 
 OUTFIT_KEYS: List[str] = ["formal", "casual"]
+
+
+def archetype_to_gender_style(archetype_label: str) -> str:
+    """
+    Given an archetype label ("young woman", "adult man", etc.),
+    return its gender style code "f" or "m". Defaults to "f".
+    """
+    for lbl, g in GENDER_ARCHETYPES:
+        if lbl == archetype_label:
+            return g
+    return "f"
 
 
 def load_outfit_prompts(csv_path: Path) -> Dict[str, Dict[str, List[str]]]:
@@ -923,6 +1004,8 @@ def build_outfit_prompt(base_outfit_desc: str, gender_style: str) -> str:
         "Change the hair style to match the outfit, but dont change the hair length or general look."
         "Use a pure, flat green background (#00FF00) behind the character, and make sure the character and outfit "
         "have none of the background color on them."
+        "Do not change the body, chest, and hip proportions to be different from the original."
+        "Do not change hair length, even if its in a different style."
     )
 
 
@@ -1586,6 +1669,57 @@ def prompt_for_scale(image_path: Path, user_eye_line_ratio: Optional[float] = No
     return chosen
 
 
+def finalize_character(
+    char_dir: Path,
+    display_name: str,
+    voice: str,
+    game_name: Optional[str],
+) -> None:
+    """
+    Shared finalization step for a character:
+      - Pick representative outfit
+      - Eye line + name_color
+      - Scale vs reference
+      - Flatten pose/outfit combos into ST pose letters
+      - Write character.yml
+    """
+    rep_outfit = pick_representative_outfit(char_dir)
+
+    print("[INFO] Collecting eye line and name color...")
+    eye_line, name_color = prompt_for_eye_and_hair(rep_outfit)
+
+    print("[INFO] Collecting scale vs reference...")
+    scale = prompt_for_scale(rep_outfit, user_eye_line_ratio=eye_line)
+
+    print("[INFO] Flattening pose/outfit combinations into ST pose letters...")
+    final_pose_letters = flatten_pose_outfits_to_letter_poses(char_dir)
+    if not final_pose_letters:
+        print("[WARN] Flattening produced no poses; using existing letter folders.")
+        final_pose_letters = sorted(
+            [
+                p.name
+                for p in char_dir.iterdir()
+                if p.is_dir() and len(p.name) == 1 and p.name.isalpha()
+            ]
+        )
+
+    poses_yaml = {letter: {"facing": "right"} for letter in final_pose_letters}
+
+    yml_path = char_dir / "character.yml"
+    write_character_yml(
+        yml_path,
+        display_name,
+        voice,
+        eye_line,
+        name_color,
+        scale,
+        poses_yaml,
+        game=game_name,
+    )
+
+    print(f"=== Finished character: {display_name} ({char_dir.name}) ===")
+
+
 # =========================
 # Gemini generation helpers (single-shot)
 # =========================
@@ -1743,6 +1877,402 @@ def generate_expressions_for_single_outfit_once(
     return generated_paths
 
 
+def generate_and_review_expressions_for_pose(
+    api_key: str,
+    char_dir: Path,
+    pose_dir: Path,
+    pose_label: str,
+) -> None:
+    """
+    For a given pose directory (a, b), iterate each outfit and:
+      - Generate its full expression set.
+      - Immediately show review window for just that outfit.
+      - Allow Accept / Regenerate / Cancel at outfit level.
+
+    This is shared by both the primary character and the gender-bent character.
+    """
+    outfits_dir = pose_dir / "outfits"
+    faces_root = pose_dir / "faces"
+    outfits_dir.mkdir(parents=True, exist_ok=True)
+    faces_root.mkdir(parents=True, exist_ok=True)
+
+    for outfit_path in sorted(outfits_dir.iterdir()):
+        if not outfit_path.is_file():
+            continue
+        if outfit_path.suffix.lower() not in (".png", ".webp"):
+            continue
+
+        outfit_name = outfit_path.stem
+
+        while True:
+            expr_paths = generate_expressions_for_single_outfit_once(
+                api_key,
+                pose_dir,
+                outfit_path,
+                faces_root,
+            )
+
+            infos = [
+                (
+                    p,
+                    f"Pose {pose_label} – {outfit_name} – {p.relative_to(char_dir)}",
+                )
+                for p in expr_paths
+            ]
+
+            choice = review_images_for_step(
+                infos,
+                f"Review Expressions for Pose {pose_label} – {outfit_name}",
+                "These expressions are generated for this single pose/outfit.\n"
+                "Accept them, regenerate, or cancel.",
+            )
+
+            if choice == "accept":
+                break
+            if choice == "regenerate":
+                continue
+            if choice == "cancel":
+                sys.exit(0)
+
+
+def get_reference_images_for_archetype(archetype_label: str, max_images: int = 7) -> List[Path]:
+    """
+    Choose a small set of reference sprites to show Gemini the art style.
+
+    Preference:
+      1) PNG/WEBP/JPG from reference_sprites/<archetype_label>/ if that folder exists.
+      2) Otherwise, any PNGs directly under reference_sprites/.
+    """
+    paths: List[Path] = []
+
+    arch_dir = REF_SPRITES_DIR / archetype_label
+    if arch_dir.is_dir():
+        for p in sorted(arch_dir.iterdir()):
+            if p.suffix.lower() in (".png", ".webp", ".jpg", ".jpeg"):
+                paths.append(p)
+                if len(paths) >= max_images:
+                    break
+
+    if not paths and REF_SPRITES_DIR.is_dir():
+        for p in sorted(REF_SPRITES_DIR.iterdir()):
+            if p.suffix.lower() == ".png":
+                paths.append(p)
+                if len(paths) >= max_images:
+                    break
+
+    return paths
+
+
+def build_prompt_for_idea(concept: str, archetype_label: str, gender_style: str) -> str:
+    """
+    Build the text prompt used when generating a brand new character from a concept.
+    """
+    gender_word = "girl" if gender_style == "f" else "boy"
+    return (
+        f"Create concept art for an original {archetype_label} {gender_word} character "
+        f"for a Japanese-style visual novel. The character idea is:\n\n"
+        f"{concept}\n\n"
+        "Match the art style and rendering of the reference sprites exactly so they look "
+        "like they come from the same game. The character should be cropped from the "
+        "mid-thigh up, facing mostly toward the viewer in a friendly, neutral pose that "
+        "would work as a base sprite. They should not be holding anything in their hands. "
+        "Use a pure, flat green background (#00FF00) behind the character, with no "
+        "green background color on the character or outfit itself. Use clean line art "
+        "and vibrant but not overly saturated colors that match the reference style."
+    )
+
+
+def generate_initial_character_from_prompt(
+    api_key: str,
+    concept: str,
+    archetype_label: str,
+    output_root: Path,
+) -> Path:
+    """
+    Use Gemini + reference sprites to generate a brand new base character image
+    from a text concept. The result is saved under:
+
+        <output_root>/_prompt_sources/<slug>.webp
+
+    and that path is returned so it can be fed into the normal pipeline.
+    """
+    gender_style = archetype_to_gender_style(archetype_label)
+    refs = get_reference_images_for_archetype(archetype_label)
+    if refs:
+        print(f"[INFO] Using {len(refs)} reference sprite(s) for archetype '{archetype_label}'.")
+    else:
+        print(f"[WARN] No reference sprites found for archetype '{archetype_label}'. "
+              "Gemini will rely on the text prompt alone.")
+
+    full_prompt = build_prompt_for_idea(concept, archetype_label, gender_style)
+    print("[Gemini] Generating new character from text prompt...")
+    img_bytes = call_gemini_text_or_refs(api_key, full_prompt, refs)
+
+    # Simple slug from archetype + random token so multiple runs do not clash.
+    rand_token = hex(random.getrandbits(32))[2:]
+    slug = f"{archetype_label.replace(' ', '_')}_{rand_token}"
+    prompt_src_dir = output_root / "_prompt_sources"
+    prompt_src_dir.mkdir(parents=True, exist_ok=True)
+    out_stem = prompt_src_dir / slug
+
+    final_path = save_image_bytes_as_webp(img_bytes, out_stem)
+    print(f"[INFO] Saved prompt-generated source sprite to: {final_path}")
+    return final_path
+
+
+# =========================
+# Tk UI: source mode + prompt entry
+# =========================
+
+def prompt_source_mode() -> str:
+    """
+    Tk dialog asking whether to generate from an image or from a text prompt.
+
+    Returns:
+        "image"  -> user wants to pick an image file
+        "prompt" -> user wants to describe a character concept
+    """
+    root = tk.Tk()
+    root.configure(bg=BG_COLOR)
+    root.title("Sprite Source")
+
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    wrap_len = _wraplength_for(int(sw * 0.9))
+
+    tk.Label(
+        root,
+        text="How would you like to create this character?",
+        font=TITLE_FONT,
+        bg=BG_COLOR,
+        wraplength=wrap_len,
+        justify="center",
+    ).grid(row=0, column=0, padx=10, pady=(10, 6), sticky="we")
+
+    mode_var = tk.StringVar(value="image")
+
+    modes_frame = tk.Frame(root, bg=BG_COLOR)
+    modes_frame.grid(row=1, column=0, pady=(4, 8))
+
+    tk.Radiobutton(
+        modes_frame,
+        text="From an existing image (pick a file)",
+        variable=mode_var,
+        value="image",
+        bg=BG_COLOR,
+        anchor="w",
+    ).pack(anchor="w", padx=10, pady=2)
+
+    tk.Radiobutton(
+        modes_frame,
+        text="From a text prompt (Gemini designs a new character)",
+        variable=mode_var,
+        value="prompt",
+        bg=BG_COLOR,
+        anchor="w",
+    ).pack(anchor="w", padx=10, pady=2)
+
+    decision = {"mode": "image"}
+
+    def on_ok():
+        decision["mode"] = mode_var.get()
+        root.destroy()
+
+    def on_cancel():
+        sys.exit(0)
+
+    btns = tk.Frame(root, bg=BG_COLOR)
+    btns.grid(row=2, column=0, pady=(6, 10))
+    tk.Button(btns, text="OK", width=16, command=on_ok).pack(side=tk.LEFT, padx=10)
+    tk.Button(btns, text="Cancel and Exit", width=16, command=on_cancel).pack(side=tk.LEFT, padx=10)
+
+    _center_and_clamp(root)
+    root.mainloop()
+
+    return decision["mode"]
+
+
+def prompt_character_idea_and_archetype() -> Tuple[str, str, str, str, str]:
+    """
+    Tk dialog asking for:
+      - A free-text character concept
+      - Voice (Girl / Boy)
+      - A name (auto-filled from names.csv by voice, editable)
+      - An archetype label (young woman, adult man, etc., filtered by voice)
+
+    Returns: (concept_text, archetype_label, voice, display_name, gender_style)
+    """
+    girl_names, boy_names = load_name_pool(NAMES_CSV_PATH)
+
+    root = tk.Tk()
+    root.configure(bg=BG_COLOR)
+    root.title("Character Concept")
+
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    wrap_len = _wraplength_for(int(sw * 0.9))
+
+    tk.Label(
+        root,
+        text="Describe the kind of character you want Gemini to design,\n"
+             "then choose their voice, name, and archetype.",
+        font=TITLE_FONT,
+        bg=BG_COLOR,
+        wraplength=wrap_len,
+        justify="center",
+    ).grid(row=0, column=0, padx=10, pady=(10, 6), sticky="we")
+
+    # Concept text
+    text_frame = tk.Frame(root, bg=BG_COLOR)
+    text_frame.grid(row=1, column=0, padx=10, pady=(4, 4), sticky="nsew")
+    root.grid_rowconfigure(1, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+
+    txt = tk.Text(text_frame, width=60, height=8, wrap="word")
+    txt.pack(fill="both", expand=True)
+
+    # Voice + name row
+    voice_var = tk.StringVar(value="")
+    name_var = tk.StringVar(value="")
+    gender_style_var = {"value": None}
+
+    vn_frame = tk.Frame(root, bg=BG_COLOR)
+    vn_frame.grid(row=2, column=0, padx=10, pady=(4, 4), sticky="we")
+
+    tk.Label(
+        vn_frame,
+        text="Voice:",
+        bg=BG_COLOR,
+        fg="black",
+        font=INSTRUCTION_FONT,
+    ).grid(row=0, column=0, padx=(0, 6), pady=2, sticky="w")
+
+    def _pick_random_name_for_voice(v: str) -> str:
+        return pick_random_name(v, girl_names, boy_names)
+
+    def set_voice(v: str):
+        voice_var.set(v)
+        # Fill name if empty
+        if not name_var.get().strip():
+            name_var.set(_pick_random_name_for_voice(v))
+        # Update archetype menu based on gender
+        update_archetype_menu()
+
+    tk.Button(
+        vn_frame, text="Girl", width=10, command=lambda: set_voice("girl")
+    ).grid(row=0, column=1, padx=4, pady=2, sticky="w")
+    tk.Button(
+        vn_frame, text="Boy", width=10, command=lambda: set_voice("boy")
+    ).grid(row=0, column=2, padx=4, pady=2, sticky="w")
+
+    tk.Label(
+        vn_frame,
+        text="Name:",
+        bg=BG_COLOR,
+        fg="black",
+        font=INSTRUCTION_FONT,
+    ).grid(row=1, column=0, padx=(0, 6), pady=2, sticky="w")
+
+    name_entry = tk.Entry(vn_frame, textvariable=name_var, width=24)
+    name_entry.grid(row=1, column=1, columnspan=2, padx=4, pady=2, sticky="w")
+
+    # Archetype row
+    arch_frame = tk.Frame(root, bg=BG_COLOR)
+    arch_frame.grid(row=3, column=0, pady=(4, 4))
+
+    tk.Label(
+        arch_frame,
+        text="Archetype:",
+        bg=BG_COLOR,
+        fg="black",
+        font=INSTRUCTION_FONT,
+    ).pack(side=tk.LEFT, padx=(0, 6))
+
+    arche_labels = [lbl for (lbl, _) in GENDER_ARCHETYPES]
+    arch_var = tk.StringVar(value="")
+
+    arche_menu = tk.OptionMenu(arch_frame, arch_var, "")
+    arche_menu.config(width=24)
+    arche_menu.pack(side=tk.LEFT)
+
+    def update_archetype_menu():
+        menu = arche_menu["menu"]
+        menu.delete(0, "end")
+        v = voice_var.get()
+        if v == "girl":
+            labels = [label for (label, g) in GENDER_ARCHETYPES if g == "f"]
+            gs = "f"
+        elif v == "boy":
+            labels = [label for (label, g) in GENDER_ARCHETYPES if g == "m"]
+            gs = "m"
+        else:
+            labels = []
+            gs = None
+
+        gender_style_var["value"] = gs
+
+        if labels:
+            arch_var.set(labels[0])
+        else:
+            arch_var.set("")
+
+        for lbl in labels:
+            menu.add_command(label=lbl, command=lambda v=lbl: arch_var.set(v))
+
+    decision = {
+        "ok": False,
+        "concept": "",
+        "archetype": "",
+        "voice": "",
+        "name": "",
+        "gstyle": None,
+    }
+
+    def on_ok():
+        concept = txt.get("1.0", "end").strip()
+        v = voice_var.get()
+        nm = name_var.get().strip()
+        arch = arch_var.get()
+        gs = gender_style_var["value"]
+
+        if not concept:
+            messagebox.showerror("Missing description", "Please describe the character concept.")
+            return
+        if not v or not arch or not gs:
+            messagebox.showerror("Missing data", "Please choose a voice and archetype.")
+            return
+        if not nm:
+            nm = _pick_random_name_for_voice(v)
+
+        decision["ok"] = True
+        decision["concept"] = concept
+        decision["archetype"] = arch
+        decision["voice"] = v
+        decision["name"] = nm
+        decision["gstyle"] = gs
+        root.destroy()
+
+    def on_cancel():
+        sys.exit(0)
+
+    btns = tk.Frame(root, bg=BG_COLOR)
+    btns.grid(row=4, column=0, pady=(6, 10))
+    tk.Button(btns, text="OK", width=16, command=on_ok).pack(side=tk.LEFT, padx=10)
+    tk.Button(btns, text="Cancel and Exit", width=16, command=on_cancel).pack(side=tk.LEFT, padx=10)
+
+    _center_and_clamp(root)
+    root.mainloop()
+
+    if not decision["ok"]:
+        sys.exit(0)
+
+    return (
+        decision["concept"],
+        decision["archetype"],
+        decision["voice"],
+        decision["name"],
+        decision["gstyle"],
+    )
+
+
 # =========================
 # Character pipeline (per source image)
 # =========================
@@ -1753,38 +2283,70 @@ def process_single_character(
     output_root: Path,
     outfit_db: Dict[str, Dict[str, List[str]]],
     game_name: Optional[str] = None,
+    preselected: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Run the full pipeline for a single source image:
 
-    1) Voice + random name + archetype.
-    2) Pose A (normalize).
-    3) Pose B (new pose, review loop).
-    4) Pose C (gender-bent, review loop).
-    5) For each pose:
-       - Generate outfits, review once (A & C can reroll prompts).
-       - For each outfit:
-           - Generate expressions, review after each outfit.
-    6) Eye line + name color, then scale.
-    7) Flatten pose+outfit combos into ST poses.
-    8) Write character.yml.
+    PRIMARY CHARACTER:
+      1) Voice + random name + archetype.
+      2) Pose A (normalize).
+      3) Pose B (new pose, review loop).
+      4) For A & B:
+         - Generate outfits (A can reroll prompts; B reuses A prompts).
+         - For each outfit: generate expressions, review per outfit.
+      5) Eye line + name color + scale.
+      6) Flatten pose+outfit combos into ST poses.
+      7) Write character.yml.
+
+    OPTIONAL GENDER-BENT CHARACTER (separate folder):
+      1) Ask if we should generate a GB version.
+      2) If yes: choose GB archetype.
+      3) Create a new character folder with a random opposite-gender name.
+      4) Pose A' = gender-bent version of primary Pose A (with review loop).
+      5) Pose B' = new pose for GB character (with review loop).
+      6) Outfits & expressions as above, using GB archetype/prompts.
+      7) Eye line + scale + flatten + character.yml for GB character.
     """
     print(f"\n=== Processing source image: {image_path.name} ===")
 
+    # --- Primary character: basic setup (voice, name, archetype) ---
     # --- Basic setup: voice, name, archetype ---
-    voice, display_name, archetype_label, gender_style = prompt_voice_archetype_and_name(image_path)
+    if preselected is not None:
+        voice = preselected["voice"]
+        display_name = preselected["display_name"]
+        archetype_label = preselected["archetype_label"]
+        gender_style = preselected["gender_style"]
+        print(f"[INFO] Using preselected voice/name/archetype for {display_name}: "
+              f"voice={voice}, archetype={archetype_label}, gender_style={gender_style}")
+    else:
+        voice, display_name, archetype_label, gender_style = prompt_voice_archetype_and_name(image_path)
+
     char_folder_name = get_unique_folder_name(output_root, display_name)
     char_dir = output_root / char_folder_name
     char_dir.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Output character folder: {char_dir}")
 
-    # --- Pose A: base / normalized ---
+    # --- Ask once whether to create a separate gender-bent character ---
+    root_toggle = tk.Tk()
+    root_toggle.withdraw()
+    do_genderbend = messagebox.askyesno(
+        "Gender-Bent Character",
+        "Also generate a gender-bent version of this character as a separate character folder?",
+    )
+    root_toggle.destroy()
+
+    # =========================
+    # PRIMARY CHARACTER: POSES A and B
+    # =========================
+
+    # Pose A: normalized base
     a_dir = char_dir / "a"
     a_dir.mkdir(parents=True, exist_ok=True)
     a_base_stem = a_dir / "base"
     a_base_path = generate_initial_pose_once(api_key, image_path, a_base_stem, gender_style)
 
-    # --- Pose B: new pose with review loop ---
+    # Pose B: new pose with review loop
     b_dir = char_dir / "b"
     b_dir.mkdir(parents=True, exist_ok=True)
     b_base_stem = b_dir / "base"
@@ -1804,42 +2366,13 @@ def process_single_character(
         if choice == "cancel":
             sys.exit(0)
 
-    # --- Pose C: gender-bent pose + archetype selection + review ---
-    gb_archetype_label, gb_gender_style = prompt_genderbend_archetype(gender_style)
-    c_dir = char_dir / "c"
-    c_dir.mkdir(parents=True, exist_ok=True)
-    c_base_stem = c_dir / "base"
-
-    while True:
-        c_base_path = generate_genderbend_pose_once(
-            api_key,
-            a_base_path,
-            c_base_stem,
-            gender_style,
-            gb_gender_style,
-            gb_archetype_label,
-        )
-        choice = review_images_for_step(
-            [(c_base_path, f"Pose C base (gender-bent): {c_base_path.name}")],
-            "Review Pose C (Gender-Bent)",
-            "Accept this gender-bent pose, regenerate it, or cancel.",
-        )
-
-        if choice == "accept":
-            break
-        if choice == "regenerate":
-            continue
-        if choice == "cancel":
-            sys.exit(0)
-
     # =========================
-    # Outfits per pose
+    # PRIMARY CHARACTER: OUTFITS
     # =========================
 
-    # --- Pose A outfits (fresh random prompts each regenerate) ---
+    # Pose A outfits (fresh random prompts each regenerate)
     print("[INFO] Generating outfits for pose A...")
     while True:
-        # Pick a fresh random set of outfit prompts for this archetype
         outfit_prompts_orig = choose_outfit_prompts_for_archetype(
             archetype_label,
             gender_style,
@@ -1861,14 +2394,13 @@ def process_single_character(
             "Accept these outfits, regenerate them (new random prompts), or cancel.",
         )
         if choice == "accept":
-            # Keep the last outfit_prompts_orig for use with Pose B (same archetype).
             break
         if choice == "regenerate":
             continue
         if choice == "cancel":
             sys.exit(0)
 
-    # --- Pose B outfits (reuse Pose A's accepted outfit prompts) ---
+    # Pose B outfits (reuse Pose A's accepted outfit prompts)
     print("[INFO] Generating outfits for pose B...")
     while True:
         b_out_paths = generate_outfits_once(
@@ -1892,8 +2424,95 @@ def process_single_character(
         if choice == "cancel":
             sys.exit(0)
 
-    # --- Pose C outfits (gender-bent; fresh random prompts each regenerate) ---
-    print("[INFO] Generating outfits for pose C...")
+    # =========================
+    # PRIMARY CHARACTER: EXPRESSIONS
+    # =========================
+
+    print("[INFO] Generating expressions for pose A (per outfit)...")
+    generate_and_review_expressions_for_pose(api_key, char_dir, a_dir, "A")
+
+    print("[INFO] Generating expressions for pose B (per outfit)...")
+    generate_and_review_expressions_for_pose(api_key, char_dir, b_dir, "B")
+
+    # =========================
+    # PRIMARY CHARACTER: FINALIZE
+    # =========================
+
+    finalize_character(char_dir, display_name, voice, game_name)
+
+    # =========================
+    # OPTIONAL: GENDER-BENT CHARACTER
+    # =========================
+
+    if not do_genderbend:
+        return
+
+    # --- Choose GB archetype (opposite gender group) ---
+    gb_archetype_label, gb_gender_style = prompt_genderbend_archetype(gender_style)
+    gb_voice = "girl" if gb_gender_style == "f" else "boy"
+
+    # Random opposite-gender name for GB character
+    girl_names, boy_names = load_name_pool(NAMES_CSV_PATH)
+    gb_display_name = pick_random_name(gb_voice, girl_names, boy_names)
+    gb_folder_name = get_unique_folder_name(output_root, gb_display_name)
+    gb_char_dir = output_root / gb_folder_name
+    gb_char_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Output gender-bent character folder: {gb_char_dir}")
+
+    # ----- GB Pose A': gender-bent version of primary Pose A -----
+    gb_a_dir = gb_char_dir / "a"
+    gb_a_dir.mkdir(parents=True, exist_ok=True)
+    gb_a_base_stem = gb_a_dir / "base"
+
+    while True:
+        gb_a_base_path = generate_genderbend_pose_once(
+            api_key,
+            a_base_path,
+            gb_a_base_stem,
+            gender_style,
+            gb_gender_style,
+            gb_archetype_label,
+        )
+        choice = review_images_for_step(
+            [(gb_a_base_path, f"GB Pose A base (gender-bent): {gb_a_base_path.name}")],
+            "Review Gender-Bent Base Pose",
+            "Accept this gender-bent base pose, regenerate it, or cancel.",
+        )
+
+        if choice == "accept":
+            break
+        if choice == "regenerate":
+            continue
+        if choice == "cancel":
+            sys.exit(0)
+
+    # ----- GB Pose B': new pose for GB character -----
+    gb_b_dir = gb_char_dir / "b"
+    gb_b_dir.mkdir(parents=True, exist_ok=True)
+    gb_b_base_stem = gb_b_dir / "base"
+
+    while True:
+        gb_b_base_path = generate_second_pose_once(
+            api_key,
+            gb_a_base_path,
+            gb_b_base_stem,
+            gb_gender_style,
+        )
+        choice = review_images_for_step(
+            [(gb_b_base_path, f"GB Pose B base: {gb_b_base_path.name}")],
+            "Review GB Pose B (New Pose)",
+            "Accept this new GB pose, regenerate it, or cancel.",
+        )
+
+        if choice == "accept":
+            break
+        if choice == "regenerate":
+            continue
+        if choice == "cancel":
+            sys.exit(0)
+
+    # ----- GB Outfits -----
+    print("[INFO] Generating outfits for GB pose A...")
     while True:
         outfit_prompts_gb = choose_outfit_prompts_for_archetype(
             gb_archetype_label,
@@ -1902,18 +2521,18 @@ def process_single_character(
             outfit_db,
         )
 
-        c_out_paths = generate_outfits_once(
+        gb_a_out_paths = generate_outfits_once(
             api_key,
-            c_base_path,
-            c_dir / "outfits",
+            gb_a_base_path,
+            gb_a_dir / "outfits",
             gb_gender_style,
             outfit_prompts_gb,
         )
-        c_infos = [(p, f"Pose C (gender-bent) – {p.name}") for p in c_out_paths]
+        gb_a_infos = [(p, f"GB Pose A – {p.name}") for p in gb_a_out_paths]
         choice = review_images_for_step(
-            c_infos,
-            "Review Outfits for Pose C",
-            "Accept these outfits, regenerate them (new random prompts), or cancel.",
+            gb_a_infos,
+            "Review Outfits for GB Pose A",
+            "Accept these GB outfits, regenerate them (new random prompts), or cancel.",
         )
         if choice == "accept":
             break
@@ -1922,59 +2541,43 @@ def process_single_character(
         if choice == "cancel":
             sys.exit(0)
 
+    print("[INFO] Generating outfits for GB pose B...")
+    while True:
+        gb_b_out_paths = generate_outfits_once(
+            api_key,
+            gb_b_base_path,
+            gb_b_dir / "outfits",
+            gb_gender_style,
+            outfit_prompts_gb,
+        )
+        gb_b_infos = [(p, f"GB Pose B – {p.name}") for p in gb_b_out_paths]
+        gb_a_infos = [(p, f"GB Pose A (reference) – {p.name}") for p in gb_a_out_paths]
+        choice = review_images_for_step(
+            gb_b_infos + gb_a_infos,
+            "Review Outfits for GB Pose B",
+            "Compare GB Pose B outfits against GB Pose A. Accept, regenerate B, or cancel.",
+        )
+        if choice == "accept":
+            break
+        if choice == "regenerate":
+            continue
+        if choice == "cancel":
+            sys.exit(0)
+
+    # ----- GB Expressions -----
+    print("[INFO] Generating expressions for GB pose A (per outfit)...")
+    generate_and_review_expressions_for_pose(api_key, gb_char_dir, gb_a_dir, "GB-A")
+
+    print("[INFO] Generating expressions for GB pose B (per outfit)...")
+    generate_and_review_expressions_for_pose(api_key, gb_char_dir, gb_b_dir, "GB-B")
+
+    # ----- GB Finalization -----
+    finalize_character(gb_char_dir, gb_display_name, gb_voice, game_name)
+
+
     # =========================
     # Expressions per pose/outfit
     # =========================
-
-    def generate_and_review_expressions_for_pose(pose_dir: Path, pose_label: str) -> None:
-        """
-        For a given pose directory (a, b, c), iterate each outfit and:
-          - Generate its full expression set.
-          - Immediately show review window for just that outfit.
-          - Allow Accept / Regenerate / Cancel at outfit level.
-        """
-        outfits_dir = pose_dir / "outfits"
-        faces_root = pose_dir / "faces"
-        outfits_dir.mkdir(parents=True, exist_ok=True)
-        faces_root.mkdir(parents=True, exist_ok=True)
-
-        for outfit_path in sorted(outfits_dir.iterdir()):
-            if not outfit_path.is_file():
-                continue
-            if outfit_path.suffix.lower() not in (".png", ".webp"):
-                continue
-
-            outfit_name = outfit_path.stem
-
-            while True:
-                expr_paths = generate_expressions_for_single_outfit_once(
-                    api_key,
-                    pose_dir,
-                    outfit_path,
-                    faces_root,
-                )
-
-                infos = [
-                    (
-                        p,
-                        f"Pose {pose_label} – {outfit_name} – {p.relative_to(char_dir)}",
-                    )
-                    for p in expr_paths
-                ]
-
-                choice = review_images_for_step(
-                    infos,
-                    f"Review Expressions for Pose {pose_label} – {outfit_name}",
-                    "These expressions are generated for this single pose/outfit.\n"
-                    "Accept them, regenerate, or cancel.",
-                )
-
-                if choice == "accept":
-                    break
-                if choice == "regenerate":
-                    continue
-                if choice == "cancel":
-                    sys.exit(0)
 
     print("[INFO] Generating expressions for pose A (per outfit)...")
     generate_and_review_expressions_for_pose(a_dir, "A")
@@ -2043,7 +2646,16 @@ def find_character_images(input_dir: Path) -> List[Path]:
 
 
 def main() -> None:
-    """Parse arguments, validate API key, load outfit CSV, and run the pipeline."""
+    """
+    Parse arguments, validate API key, load outfit CSV, and run the pipeline
+    for a *single* character at a time, using either:
+
+      - An existing image file (chosen via file dialog), or
+      - A new character generated from a text prompt.
+
+    The old batch mode by scanning --input-dir is intentionally removed in
+    favor of a more interactive one-at-a-time workflow.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "End-to-end Student Transfer sprite builder using Google Gemini:\n"
@@ -2058,7 +2670,8 @@ def main() -> None:
         "--input-dir",
         required=True,
         type=Path,
-        help="Folder containing one source image per character.",
+        help="Previously used for batch mode; now only used as the initial directory "
+             "when choosing an image file.",
     )
     parser.add_argument(
         "--output-dir",
@@ -2074,7 +2687,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    
+
     # Seed RNG with strong OS entropy so different runs do not repeat the same outfit/name picks.
     random.seed(int.from_bytes(os.urandom(16), "big"))
 
@@ -2084,23 +2697,85 @@ def main() -> None:
     output_root: Path = args.output_dir
     game_name: Optional[str] = args.game_name
 
-    if not input_dir.is_dir():
-        raise SystemExit(f"Input directory does not exist or is not a directory: {input_dir}")
-
-    images = find_character_images(input_dir)
-    if not images:
-        raise SystemExit(f"No character images found in: {input_dir}")
+    if not input_dir.exists():
+        print(f"[WARN] Input directory does not exist: {input_dir}")
 
     outfit_db = load_outfit_prompts(OUTFIT_CSV_PATH)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    print(f"Found {len(images)} character image(s) to process.")
+    # --- New: ask how to start (image vs prompt) ---
+    mode = prompt_source_mode()
 
-    for image_path in images:
+    if mode == "image":
+        # Use a file chooser to pick a single character image.
+        root = tk.Tk()
+        root.withdraw()
+        initialdir = input_dir if input_dir.is_dir() else str(Path.cwd())
+        filename = filedialog.askopenfilename(
+            title="Choose character source image",
+            initialdir=initialdir,
+            filetypes=[
+                ("Images", "*.png;*.jpg;*.jpeg;*.webp"),
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg;*.jpeg"),
+                ("WEBP", "*.webp"),
+                ("All files", "*.*"),
+            ],
+        )
+        root.destroy()
+        if not filename:
+            raise SystemExit("No image selected. Exiting.")
+
+        image_path = Path(filename)
+        print(f"[INFO] Selected source image: {image_path}")
         process_single_character(api_key, image_path, output_root, outfit_db, game_name)
 
-    print("\nAll characters processed.")
-    print(f"Final sprite folders are in:\n  {output_root}")
+    else:  # mode == "prompt"
+        # Get concept + voice + name + archetype up front
+        concept, arch_label, voice, display_name, gender_style = prompt_character_idea_and_archetype()
+
+        # Generate + review the prompt-based base sprite
+        while True:
+            src_path = generate_initial_character_from_prompt(
+                api_key,
+                concept,
+                arch_label,
+                output_root,
+            )
+
+            choice = review_images_for_step(
+                [(src_path, f"Prompt-generated base: {src_path.name}")],
+                "Review Prompt-Generated Base Sprite",
+                "Accept this as the starting sprite, regenerate it, or cancel.",
+            )
+
+            if choice == "accept":
+                break
+            if choice == "regenerate":
+                continue
+            if choice == "cancel":
+                sys.exit(0)
+
+        # Now run the usual pipeline, reusing the preselected info
+        preselected = {
+            "voice": voice,
+            "display_name": display_name,
+            "archetype_label": arch_label,
+            "gender_style": gender_style,
+        }
+        process_single_character(
+            api_key,
+            src_path,
+            output_root,
+            outfit_db,
+            game_name,
+            preselected=preselected,
+        )
+
+
+
+    print("\nCharacter processed.")
+    print(f"Final sprite folder(s) are in:\n  {output_root}")
 
 
 if __name__ == "__main__":

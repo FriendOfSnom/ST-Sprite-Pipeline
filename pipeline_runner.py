@@ -2,279 +2,163 @@
 """
 pipeline_runner.py
 
-Main pipeline controller for the sprite processing tool.
-Lets the user choose which step to start from, and passes folder paths forward.
+Simple hub script for the sprite tools.
 
-Steps:
-1. Downloader
-2. Manual Sorting Helper
-3. Organizer and Finalizer
-4. Downscale Sprites (optional)
-5. Generate Expression Sheets
-6. Organize Character Folders (Sprite Library)
-Q. Quit
+Menu:
+  1. Run Gemini Sprite Character Creator
+     - Asks for an output folder using a system folder picker.
+     - Calls gemini_sprite_pipeline.run_pipeline() with that folder.
 
-Design:
-- Each step can run standalone on a chosen folder.
-- When run in sequence, we pass the most-recent path forward automatically.
-- Step 4 runs in-place downscaling.
+  2. Generate Expression Sheets for Existing Sprites
+     - Asks for a root sprite folder using a system folder picker.
+     - Calls expression_sheet_maker.py <root folder> so that expression
+       sheets are written into each pose folder under that root.
+
+  Q. Quit
 """
 
 import os
 import sys
 import subprocess
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
 
-from downloader import run_downloader_interactive
-from manual_sort_helper import run_manual_sort
-from organize_sprites import run_organizer_interactive
+from gemini_sprite_pipeline import run_pipeline  # core character creator
 
-# --------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------
-def _abs(path: str | None) -> str | None:
-    if not path:
+
+def pick_directory(title: str) -> str | None:
+    """
+    Try to open a native folder-chooser dialog (Explorer/Finder/etc.) and
+    return the chosen directory as a string.
+
+    If the dialog fails or the user cancels, fall back to asking for a
+    path via stdin. Returns None if the user declines both.
+    """
+    print("[INFO] Opening a folder picker window. If you do not see it,")
+    print("       check your taskbar or behind other windows.")
+
+    folder: str | None = None
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        folder = filedialog.askdirectory(title=title)
+        root.destroy()
+    except Exception as e:
+        print(f"[WARN] Tk folder dialog failed: {e}")
+        folder = None
+
+    if folder:
+        return os.path.abspath(os.path.expanduser(folder))
+
+    # At this point either:
+    #  - user clicked Cancel in the dialog, or
+    #  - the dialog failed to appear / threw an exception.
+    print("[INFO] No folder selected from the GUI dialog.")
+    resp = input("Would you like to type a folder path manually? [y/N]: ").strip().lower()
+    if resp != "y":
         return None
-    return os.path.abspath(os.path.expanduser(path))
 
-def _unique_dir_sibling(base_dir: str, desired_name: str) -> str:
-    parent = os.path.dirname(_abs(base_dir))
-    candidate = os.path.join(parent, desired_name)
-    if not os.path.exists(candidate):
-        return candidate
-    i = 2
-    while True:
-        alt = f"{candidate}_{i}"
-        if not os.path.exists(alt):
-            return alt
-        i += 1
+    typed = input("Enter full folder path (or leave empty to abort): ").strip()
+    if not typed:
+        return None
 
-def _default_finalized_dir(sorted_path: str) -> str:
-    sorted_path = _abs(sorted_path)
-    base = os.path.basename(sorted_path.rstrip("/\\"))
-    return _unique_dir_sibling(sorted_path, f"{base}_finalized")
+    return os.path.abspath(os.path.expanduser(typed))
 
-def ask_user_continue(prompt: str) -> bool:
-    answer = input(f"\n{prompt} (Y/N): ").strip().lower()
-    return answer == 'y'
+def script_root() -> Path:
+    """
+    Return the directory where this script lives.
+    Used to locate expression_sheet_maker.py reliably.
+    """
+    return Path(__file__).resolve().parent
 
-def run_expression_sheets(root_path: str) -> None:
-    print("\n[INFO] Running Expression Sheet Generator...")
-    subprocess.run([sys.executable, "expression_sheet_maker.py", _abs(root_path)], check=True)
-    print("\n[INFO] Expression sheets generated successfully!")
 
-def run_bulk_downscale_interactive(default_root: str | None = None) -> str:
-    print("=" * 60)
-    print(" Sprite Bulk Downscaler (Step 4)")
-    print("=" * 60)
+def run_character_creator() -> None:
+    """
+    Ask the user where the new character sprite folder(s) should be created,
+    then call the Gemini sprite pipeline directly as a function.
+    """
+    print("\n[Character Creator] Choose where to place the new character folder(s).")
+    out_dir_str = pick_directory("Choose output folder for new character sprites")
+    if out_dir_str is None:
+        print("[INFO] No folder selected; returning to menu.")
+        return
 
-    default_root = _abs(default_root)
-    if default_root and os.path.isdir(default_root):
-        root = default_root
-        print(f"\n[INFO] Using folder from the previous step:\n  {root}")
-    else:
-        root_in = input("\nEnter the folder that contains your character folders:\n> ").strip()
-        root = _abs(root_in)
-        if not root or not os.path.isdir(root):
-            print("\n[ERROR] The specified folder does not exist. Exiting.")
-            sys.exit(1)
+    out_dir = Path(out_dir_str)
+    print(f"[INFO] Output folder selected: {out_dir}")
 
-    cmd = [sys.executable, "bulk_downscale.py", root]
+    # Call into the pipeline directly (no subprocess), so Tk windows appear
+    # in the same process and we avoid argument/path issues.
+    try:
+        run_pipeline(out_dir, game_name=None)
+    except SystemExit as e:
+        # If the pipeline exits via SystemExit (e.g., user cancels), we catch it
+        # so that the hub can continue running.
+        print(f"[INFO] Character pipeline exited (code={e.code}). Returning to menu.")
 
-    print("\n[INFO] Running Sprite Bulk Downscaler (in-place)...")
+
+def run_expression_sheet_generator() -> None:
+    """
+    Ask the user for a sprite root folder, then call expression_sheet_maker.py
+    on that folder so that expression sheets are generated for all characters
+    under it.
+    """
+    print("\n[Expression Sheets] Choose the root folder containing your character folders.")
+    root_dir_str = pick_directory("Choose root folder for existing character sprites")
+    if root_dir_str is None:
+        print("[INFO] No folder selected; returning to menu.")
+        return
+
+    if not os.path.isdir(root_dir_str):
+        print(f"[ERROR] '{root_dir_str}' is not a valid folder.")
+        return
+
+    print(f"[INFO] Generating expression sheets under: {root_dir_str}")
+
+    root = script_root()
+    script_path = root / "expression_sheet_maker.py"
+    if not script_path.is_file():
+        print(f"[ERROR] Could not find expression_sheet_maker.py at: {script_path}")
+        return
+
+    cmd = [sys.executable, str(script_path), root_dir_str]
+    print(f"[DEBUG] Running: {' '.join(cmd)}")
     try:
         subprocess.run(cmd, check=True)
-        print("\n[INFO] Downscale pass finished.")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] expression_sheet_maker.py failed with exit code {e.returncode}")
     except Exception as e:
-        print(f"\n[ERROR] Failed to run bulk_downscale.py: {e}")
-        sys.exit(1)
+        print(f"[ERROR] Could not run expression_sheet_maker.py: {e}")
 
-    return root
 
-def _documents_folder() -> str:
-    return _abs(os.path.join(os.path.expanduser("~"), "Documents"))
-
-def run_sprite_library_interactive(default_root: str | None = None) -> None:
+def main() -> None:
     """
-    Step 6 interactive wrapper. Calls sprite_library_organizer.py.
+    Display a simple numeric menu that lets the user choose whether to:
+      1) Run the Gemini sprite character creator, or
+      2) Generate expression sheets for existing sprites.
     """
-    print("=" * 60)
-    print(" Organize Character Folders (Step 6)")
-    print("=" * 60)
+    while True:
+        print("\n" + "=" * 60)
+        print(" SPRITE TOOL HUB")
+        print("=" * 60)
+        print("1. Create a new character (Gemini Sprite Pipeline)")
+        print("2. Generate expression sheets for existing character sprites")
+        print("Q. Quit")
 
-    # Source
-    default_root = _abs(default_root)
-    if default_root and os.path.isdir(default_root):
-        source_root = default_root
-        print(f"\n[INFO] Using folder from previous step:\n  {source_root}")
-    else:
-        source_root_in = input("\nEnter the path to the folder containing your ST-compatible character folder(s):\n> ").strip()
-        source_root = _abs(source_root_in)
-        if not source_root or not os.path.isdir(source_root):
-            print("\n[ERROR] Folder path is required. Exiting.")
-            sys.exit(1)
+        choice = input("\nEnter your choice: ").strip().lower()
 
-    # Library destination
-    lib_default = os.path.join(_documents_folder() or "", "ST Sprite Library")
-    lib_in = input(f"\nWhere should the Sprite Library live?\n"
-                   f"[Press ENTER for default]\n  {lib_default}\n> ").strip()
-    library_root = _abs(lib_in) if lib_in else _abs(lib_default)
-
-    try:
-        subprocess.run(
-            [sys.executable, "sprite_library_organizer.py", source_root, "--library-root", library_root],
-            check=True
-        )
-        print("\n[INFO] Sprite Library updated.")
-    except Exception as e:
-        print(f"\n[ERROR] Failed to run sprite_library_organizer.py: {e}")
-        sys.exit(1)
-
-# --------------------------------------------------------------------
-# Main
-# --------------------------------------------------------------------
-def main():
-    print("=" * 60)
-    print(" SPRITE PIPELINE CONTROLLER")
-    print("=" * 60)
-    print("\nWhich step do you want to start with?")
-    print("1. Downloader")
-    print("2. Manual Sorting Helper")
-    print("3. Organizer and Finalizer")
-    print("4. Downscale Sprites")
-    print("5. Generate Expression Sheets")
-    print("6. Organize Character Folders (Sprite Library)")
-    print("Q. Quit")
-
-    choice = input("\nEnter your choice: ").strip().lower()
-
-    if choice == 'q':
-        print("\nExiting.")
-        sys.exit(0)
-
-    downloads_path = None
-    sorted_path = None
-    organizer_output = None
-    downscaled_root = None
-
-    if choice == '1':
-        downloads_path = _abs(run_downloader_interactive())
-
-        if ask_user_continue("Continue to Step 2 (Manual Sorting)?"):
-            sorted_path = _abs(run_manual_sort(downloads_path))
-
-            if ask_user_continue("Continue to Step 3 (Organizer)?"):
-                organizer_output = _default_finalized_dir(sorted_path)
-                organizer_output = _abs(run_organizer_interactive(sorted_path, organizer_output))
-
-                if ask_user_continue("Continue to Step 4 (Downscale Sprites)?"):
-                    downscaled_root = _abs(run_bulk_downscale_interactive(organizer_output))
-                else:
-                    downscaled_root = organizer_output
-
-                if ask_user_continue("Continue to Step 5 (Expression Sheets)?"):
-                    try:
-                        run_expression_sheets(downscaled_root)
-                    except Exception as e:
-                        print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
-
-                if ask_user_continue("Continue to Step 6 (Organize Character Folders)?"):
-                    run_sprite_library_interactive(downscaled_root)
-
-            else:
-                print("\nDone! You can run Step 3 later with that same folder.")
+        if choice == "1":
+            run_character_creator()
+        elif choice == "2":
+            run_expression_sheet_generator()
+        elif choice == "q":
+            print("\nExiting.")
+            break
         else:
-            print("\nDone! You can run Step 2 later with that same folder.")
+            print("\n[WARN] Invalid choice; please enter 1, 2, or Q.")
 
-    elif choice == '2':
-        downloads_path_in = input("\nEnter the path to your downloaded images folder:\n> ").strip()
-        downloads_path = _abs(downloads_path_in)
-        if not downloads_path or not os.path.isdir(downloads_path):
-            print("\nERROR: Folder path is required. Exiting.")
-            sys.exit(1)
-
-        sorted_path = _abs(run_manual_sort(downloads_path))
-
-        if ask_user_continue("Continue to Step 3 (Organizer)?"):
-            organizer_output = _default_finalized_dir(sorted_path)
-            organizer_output = _abs(run_organizer_interactive(sorted_path, organizer_output))
-
-            if ask_user_continue("Continue to Step 4 (Downscale Sprites)?"):
-                downscaled_root = _abs(run_bulk_downscale_interactive(organizer_output))
-            else:
-                downscaled_root = organizer_output
-
-            if ask_user_continue("Continue to Step 5 (Expression Sheets)?"):
-                try:
-                    run_expression_sheets(downscaled_root)
-                except Exception as e:
-                    print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
-
-            if ask_user_continue("Continue to Step 6 (Organize Character Folders)?"):
-                run_sprite_library_interactive(downscaled_root)
-        else:
-            print("\nDone! You can run Step 3 later with that same folder.")
-
-    elif choice == '3':
-        sorted_path_in = input("\nEnter the path to your manually sorted sprite folder:\n> ").strip()
-        sorted_path = _abs(sorted_path_in)
-        if not sorted_path or not os.path.isdir(sorted_path):
-            print("\nERROR: Folder path is required. Exiting.")
-            sys.exit(1)
-
-        organizer_output = _default_finalized_dir(sorted_path)
-        organizer_output = _abs(run_organizer_interactive(sorted_path, organizer_output))
-
-        if ask_user_continue("Continue to Step 4 (Downscale Sprites)?"):
-            downscaled_root = _abs(run_bulk_downscale_interactive(organizer_output))
-        else:
-            downscaled_root = organizer_output
-
-        if ask_user_continue("Continue to Step 5 (Expression Sheets)?"):
-            try:
-                run_expression_sheets(downscaled_root)
-            except Exception as e:
-                print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
-
-        if ask_user_continue("Continue to Step 6 (Organize Character Folders)?"):
-            run_sprite_library_interactive(downscaled_root)
-
-    elif choice == '4':
-        default_root_in = input("\nEnter the path to the folder containing your ST compatible character folder(s):\n> ").strip() or None
-        scaled_root = _abs(run_bulk_downscale_interactive(default_root_in))
-
-        if ask_user_continue("Downscaling complete. Continue to Step 5 (Expression Sheets)?"):
-            try:
-                run_expression_sheets(scaled_root)
-            except Exception as e:
-                print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
-
-        if ask_user_continue("Continue to Step 6 (Organize Character Folders)?"):
-            run_sprite_library_interactive(scaled_root)
-
-    elif choice == '5':
-        sheets_path_in = input("\nEnter the path to the folder containing your ST compatible character folder(s):\n> ").strip()
-        sheets_path = _abs(sheets_path_in)
-        if not sheets_path:
-            print("\nERROR: Folder path is required. Exiting.")
-            sys.exit(1)
-
-        try:
-            run_expression_sheets(sheets_path)
-        except Exception as e:
-            print(f"\n[ERROR] Failed to run expression_sheet_maker.py: {e}")
-
-        if ask_user_continue("Continue to Step 6 (Organize Character Folders)?"):
-            run_sprite_library_interactive(sheets_path)
-
-    elif choice == '6':
-        # Step 6 standalone
-        run_sprite_library_interactive(None)
-
-    else:
-        print("\nInvalid choice. Exiting.")
-        sys.exit(1)
-
-    print("\nPipeline complete. Exiting.")
 
 if __name__ == "__main__":
     main()

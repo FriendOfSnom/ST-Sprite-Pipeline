@@ -221,7 +221,7 @@ def strip_background(image_bytes: bytes) -> bytes:
       3) Estimate background color as the average of those border pixels.
       4) Clear any pixel sufficiently close to that background color.
     """
-    BG_CLEAR_THRESH = 60  # tweak this if it's too aggressive or too gentle
+    BG_CLEAR_THRESH = 40  # tweak this if it's too aggressive or too gentle
 
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGBA")
@@ -419,6 +419,90 @@ def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
             raise RuntimeError(
                 f"Gemini call failed after {max_retries} attempts: {last_error}"
             )
+
+def call_gemini_uniform_style_transfer(
+    api_key: str,
+    base_image_path: Path,
+    uniform_image_path: Path,
+) -> bytes:
+    """
+    Ask Gemini to redraw the *base* character wearing ONLY the clothes
+    from the uniform image.
+
+    We interleave short text descriptions with each image so it's
+    crystal-clear which one is the character to keep and which is
+    just the outfit reference.
+    """
+    # Load base character image
+    base_img = Image.open(base_image_path).convert("RGBA")
+    buf = BytesIO()
+    base_img.save(buf, format="PNG", lossless=True)
+    base_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    # Load uniform reference image
+    uni_img = Image.open(uniform_image_path).convert("RGBA")
+    buf2 = BytesIO()
+    uni_img.save(buf2, format="PNG", lossless=True)
+    uni_b64 = base64.b64encode(buf2.getvalue()).decode("utf-8")
+
+    parts = [
+        {
+            "text": (
+                "This is the MAIN CHARACTER sprite. Keep THIS character's face, hair color, "
+                "body shape, pose, and proportions exactly the same:"
+            )
+        },
+        {
+            "inline_data": {
+                "mime_type": "image/png",
+                "data": base_b64,
+            }
+        },
+        {
+            "text": (
+                "This is ONLY an EXAMPLE of the SCHOOL UNIFORM design. Do NOT copy this "
+                "character's face, hair, or body. ONLY copy the clothing style, colors, "
+                "and accessories from this uniform example:"
+            )
+        },
+        {
+            "inline_data": {
+                "mime_type": "image/png",
+                "data": uni_b64,
+            }
+        },
+        {
+            "text": (
+                "Now, redraw the MAIN CHARACTER wearing the same uniform design as the "
+                "uniform example: same jacket/shirt style, tie/bow, skirt/pants, and "
+                "color scheme. Keep the main character's pose, body proportions, and "
+                "hair length the same as in the first image.\n\n"
+                "Crop from mid-thigh up and use a flat #FF00FF background behind the "
+                "character. Make sure the background color is not used on the character "
+                "at all."
+            )
+        },
+    ]
+
+    payload = {
+        "contents": [{"parts": parts}],
+        # Optional, but helps reduce randomness so uniforms match more closely.
+        "generationConfig": {
+            "temperature": 0.25,
+        },
+    }
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+
+    resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
+    if not resp.ok:
+        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
+
+    data = resp.json()
+    raw_bytes = _extract_inline_image_from_response(data)
+    if raw_bytes is None:
+        raise RuntimeError("No image data in Gemini response for uniform style transfer.")
+
+    return strip_background(raw_bytes)
 
 
 def call_gemini_text_or_refs(
@@ -730,13 +814,11 @@ def flatten_pose_outfits_to_letter_poses(char_dir: Path) -> List[str]:
 def build_initial_pose_prompt(gender_style: str) -> str:
     """Prompt to normalize the original sprite (mid-thigh, magenta background)."""
     return (
-        "Crop the image so we only see from the character's mid-thigh on up. "
-        "Do not change the style of the character. "
-        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure "
-        "the character, outfit, and hair have none of the background color on them. "
-        "Crop the character at the midpoint of the thigh."
-        "Do not have the head, arms, hair, hands, or clothes, extending outside the frame."
-        "Do not crop off the head, and don't change the size or proportions of the character."
+        "Edit the image of the character, to give them a pure, flat, magenta (#FF00FF) background behind them."
+        "Make sure that the character, outfit, or hair end up with none of the magenta background color on them. "
+        "Make sure the head, arms, hair, hands, and clothes are all kept within the image."
+        "Keep the crop the same from the mid-thigh on up."
+        "Dont change the art style either, just edit the background that the character is on, to be that magenta color."
     )
 
 
@@ -1146,6 +1228,78 @@ def review_initial_base_pose(base_pose_path: Path) -> Tuple[str, bool]:
 
     return decision["choice"], decision["use_as_outfit"]
 
+def prompt_for_crop(
+    img: Image.Image,
+    instruction_text: str,
+    previous_crops: list,
+) -> Tuple[Optional[int], list]:
+    """
+    Tk UI that shows the image and lets the user click a horizontal crop line.
+    Returns (y_cut, updated_previous_crops).
+
+    If the user clicks at or below the current bottom of the image, we interpret
+    that as "do not crop".
+    """
+
+    result = {"y": None}
+    used_gallery = list(previous_crops)
+
+    root = tk.Tk()
+    root.configure(bg=BG_COLOR)
+    root.title("Thigh Crop Selection")
+
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    wrap_len = max(200, int(sw * 0.8))
+
+    tk.Label(
+        root,
+        text=instruction_text,
+        font=INSTRUCTION_FONT,
+        bg=BG_COLOR,
+        wraplength=wrap_len,
+        justify="center",
+    ).pack(pady=(10, 6))
+
+    ow, oh = img.size
+    disp_w, disp_h = _compute_display_size(sw, sh, ow, oh, max_w_ratio=0.60, max_h_ratio=0.60)
+    disp = img.resize((disp_w, disp_h), Image.LANCZOS)
+    tki = ImageTk.PhotoImage(disp)
+
+    canvas = tk.Canvas(root, width=disp_w, height=disp_h, bg="black", highlightthickness=0)
+    canvas.pack(pady=6)
+    canvas.create_image(0, 0, anchor="nw", image=tki)
+    canvas.image = tki
+
+    guide_line_id = None
+
+    def draw_line(y):
+        nonlocal guide_line_id
+        y = max(0, min(int(y), disp_h))
+        if guide_line_id is None:
+            guide_line_id = canvas.create_line(0, y, disp_w, y, fill=LINE_COLOR, width=3)
+        else:
+            canvas.coords(guide_line_id, 0, y, disp_w, y)
+
+    def on_motion(e):
+        draw_line(e.y)
+
+    def on_click(e):
+        disp_y = max(0, min(e.y, disp_h))
+        if guide_line_id is not None:
+            canvas.coords(guide_line_id, 0, disp_y, disp_w, disp_y)
+        real_y = int((disp_y / disp_h) * oh)
+        result["y"] = real_y
+        root.destroy()
+
+    canvas.bind("<Motion>", on_motion)
+    canvas.bind("<Button-1>", on_click)
+
+    _center_and_clamp(root)
+    root.mainloop()
+
+    return result["y"], used_gallery 
+
+
 
 # ----------------------------------------------------------------------
 # Tk: eye line + name color
@@ -1449,12 +1603,11 @@ def prompt_for_scale(image_path: Path, user_eye_line_ratio: Optional[float] = No
         root.destroy()
 
     def cancel():
-        decision["choice"] = "cancel"
         try:
             root.destroy()
         except Exception:
             pass
-
+        sys.exit(0)
 
 
 
@@ -1746,10 +1899,10 @@ def generate_and_review_expressions_for_pose(
             if choice == "cancel":
                 sys.exit(0)
 
-
-def get_reference_images_for_archetype(archetype_label: str, max_images: int = 7) -> List[Path]:
+def get_reference_images_for_archetype(archetype_label: str) -> List[Path]:
     """
-    Choose small set of reference sprites to show Gemini the art style.
+    Return *all* reference sprites for this archetype so Gemini can really
+    lock onto the style.
 
     Preference:
       1) reference_sprites/<archetype_label>/
@@ -1762,18 +1915,14 @@ def get_reference_images_for_archetype(archetype_label: str, max_images: int = 7
         for p in sorted(arch_dir.iterdir()):
             if p.suffix.lower() in (".png", ".webp", ".jpg", ".jpeg"):
                 paths.append(p)
-                if len(paths) >= max_images:
-                    break
 
+    # Fallback: generic refs at top level if the specific folder is empty
     if not paths and REF_SPRITES_DIR.is_dir():
         for p in sorted(REF_SPRITES_DIR.iterdir()):
-            if p.suffix.lower() == ".png":
+            if p.suffix.lower() in (".png", ".webp", ".jpg", ".jpeg"):
                 paths.append(p)
-                if len(paths) >= max_images:
-                    break
 
     return paths
-
 
 def get_standard_uniform_reference_images(
     gender_style: str,
@@ -1805,7 +1954,6 @@ def get_standard_uniform_reference_images(
 
     return refs
 
-
 def generate_standard_uniform_outfit(
     api_key: str,
     base_pose_path: Path,
@@ -1815,24 +1963,16 @@ def generate_standard_uniform_outfit(
     outfit_desc: str,
 ) -> Path:
     """
-    Generate a uniform outfit using ONLY ONE reference uniform sprite.
+    Generate a uniform outfit using base sprite + exactly one uniform reference.
 
-    - First reference = the character being edited (base)
-    - Second reference = exactly one uniform example
-    - Prompt is kept soft, not strict.
+    We call a dedicated style-transfer helper so that the model clearly
+    understands which image is the 'real' character.
     """
+    outfits_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect base pose as first ref
-    refs: List[Path] = []
-    if base_pose_path.is_file():
-        refs.append(base_pose_path)
-
-    # Get uniform reference images; choose EXACTLY ONE
+    # Collect the uniform reference
     uniform_refs = get_standard_uniform_reference_images(gender_style)
-    if uniform_refs:
-        uniform_ref = uniform_refs[0]  # only one reference image
-        refs.append(uniform_ref)
-    else:
+    if not uniform_refs:
         print("[WARN] No uniform reference found, falling back to normal prompt")
         image_b64 = load_image_as_base64(base_pose_path)
         prompt = build_outfit_prompt(outfit_desc, gender_style)
@@ -1841,26 +1981,15 @@ def generate_standard_uniform_outfit(
         final_path = save_image_bytes_as_png(img_bytes, out_stem)
         return final_path
 
-    # Soft, gentle prompt — no hard constraints.
-    prompt = (
-        "In these reference images:\n"
-        "- The first image shows the main character.\n"
-        "- The second image shows an example of the school uniform style.\n\n"
-        "Please redraw the character from the FIRST image wearing the school uniform "
-        "style shown in the SECOND image.\n\n"
-        "Keep the character recognizable and similar to the first image. "
-        "Match the uniform style, colors, and general design from the second image.\n\n"
-        "Use a flat #FF00FF background."
-    )
+    uniform_ref = uniform_refs[0]
 
-    # Call Gemini with exactly two images
-    img_bytes = call_gemini_text_or_refs(api_key, prompt, refs)
+    print(f"[INFO] Using uniform reference: {uniform_ref}")
+    img_bytes = call_gemini_uniform_style_transfer(api_key, base_pose_path, uniform_ref)
 
     out_stem = outfits_dir / "Uniform"
     final_path = save_image_bytes_as_png(img_bytes, out_stem)
     print(f"  Saved standardized school uniform to: {final_path}")
     return final_path
-
 
 def build_prompt_for_idea(concept: str, archetype_label: str, gender_style: str) -> str:
     """Build text prompt used when generating a new character from a concept."""
@@ -2690,6 +2819,42 @@ def run_pipeline(output_root: Path, game_name: Optional[str] = None) -> None:
 
         image_path = Path(filename)
         print(f"[INFO] Selected source image: {image_path}")
+
+        # NEW: optional thigh crop UI before normalization
+        try:
+            src_img = Image.open(image_path).convert("RGBA")
+        except Exception as e:
+            print(f"[WARN] Could not open image for cropping ({e}); using original.")
+            src_img = None
+
+        if src_img is not None:
+            prompt_text = (
+                "If this sprite is not already cropped to mid-thigh, click where you "
+                "want the lower thigh-level crop line.\n\n"
+                "If it *is* already cropped the way you like, just click along the "
+                "existing bottom edge of the character."
+            )
+
+            # We don't have previous crops yet, so pass an empty list for now.
+            y_cut, used_gallery = prompt_for_crop(
+                src_img,
+                prompt_text,
+                previous_crops=[],
+            )
+
+            # If the user clicked somewhere above the bottom edge, crop. If they
+            # clicked at (or beyond) the current bottom, we treat that as "no crop".
+            if y_cut is not None and 0 < y_cut < src_img.height:
+                cropped = src_img.crop((0, 0, src_img.width, y_cut))
+                crop_dir = output_root / "_cropped_sources"
+                crop_dir.mkdir(parents=True, exist_ok=True)
+                cropped_path = crop_dir / f"{image_path.stem}_cropped.png"
+                cropped.save(cropped_path, format="PNG")
+                print(f"[INFO] Saved thigh-cropped source image to: {cropped_path}")
+                image_path = cropped_path
+            else:
+                print("[INFO] User kept original height; skipping pre-crop.")
+
         process_single_character(api_key, image_path, output_root, outfit_db, game_name)
 
     else:

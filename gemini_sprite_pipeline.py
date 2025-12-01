@@ -53,10 +53,7 @@ from gsp_constants import (
     GENDER_ARCHETYPES,
 )
 
-# ----------------------------------------------------------------------
 # Tk layout helpers
-# ----------------------------------------------------------------------
-
 
 def _compute_display_size(
     screen_w: int,
@@ -73,7 +70,6 @@ def _compute_display_size(
     scale = min(max_w / img_w, max_h / img_h, 1.0)
     return max(1, int(img_w * scale)), max(1, int(img_h * scale))
 
-
 def _center_and_clamp(root: tk.Tk) -> None:
     """Clamp window to screen and center near top."""
     root.update_idletasks()
@@ -89,16 +85,11 @@ def _center_and_clamp(root: tk.Tk) -> None:
 
     root.geometry(f"{w}x{h}+{x}+{y}")
 
-
 def _wraplength_for(width_px: int) -> int:
     """Wrap length for labels given a target width."""
     return max(200, width_px - WRAP_PADDING)
 
-
-# ----------------------------------------------------------------------
 # Names and YAML helpers
-# ----------------------------------------------------------------------
-
 
 def load_name_pool(csv_path: Path) -> Tuple[List[str], List[str]]:
     """Load girl/boy name pools from CSV with columns: name, gender."""
@@ -128,14 +119,12 @@ def load_name_pool(csv_path: Path) -> Tuple[List[str], List[str]]:
 
     return girl_names, boy_names
 
-
 def pick_random_name(voice: str, girl_names: List[str], boy_names: List[str]) -> str:
     """Pick a random name based on voice."""
     pool = girl_names if (voice or "").lower() == "girl" else boy_names
     if not pool:
         pool = ["Alex", "Riley", "Taylor", "Jordan"]
     return random.choice(pool)
-
 
 def get_unique_folder_name(base_path: Path, desired_name: str) -> str:
     """Ensure folder name is unique within base_path by appending a counter."""
@@ -145,7 +134,6 @@ def get_unique_folder_name(base_path: Path, desired_name: str) -> str:
         counter += 1
         candidate = f"{desired_name}_{counter}"
     return candidate
-
 
 def write_character_yml(
     path: Path,
@@ -179,11 +167,7 @@ def write_character_yml(
 
     print(f"[INFO] Wrote character YAML to: {path}")
 
-
-# ----------------------------------------------------------------------
 # Image helpers / background stripping
-# ----------------------------------------------------------------------
-
 
 def save_img_webp_or_png(img: Image.Image, dest_stem: Path) -> Path:
     """Save as WEBP lossless, falling back to PNG if needed."""
@@ -213,15 +197,11 @@ def save_image_bytes_as_png(image_bytes: bytes, dest_stem: Path) -> Path:
 
 def strip_background(image_bytes: bytes) -> bytes:
     """
-    Strip a flat-ish magenta background.
-
-    Strategy:
-      1) Load RGBA.
-      2) Collect all opaque border pixels.
-      3) Estimate background color as the average of those border pixels.
-      4) Clear any pixel sufficiently close to that background color.
+    Strip a flat-ish magenta background by sampling magenta-ish border pixels
+    and clearing pixels close to that color or close to pure #FF00FF.
     """
-    BG_CLEAR_THRESH = 56  # tweak this if it's too aggressive or too gentle
+    BG_CLEAR_THRESH = 40  # a bit tighter so we don't eat hair as much
+    MAGENTA = (255, 0, 255)
 
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGBA")
@@ -230,24 +210,35 @@ def strip_background(image_bytes: bytes) -> bytes:
 
         border_samples = []
 
-        # top & bottom rows
+        def is_magentaish(r, g, b):
+            return r >= 200 and b >= 200 and g <= 80
+
+        # Collect magenta-ish border pixels first
         for x in range(w):
             for y in (0, h - 1):
                 r, g, b, a = pixels[x, y]
-                if a <= 0:
-                    continue
-                border_samples.append((r, g, b))
-
-        # left & right columns
+                if a > 0 and is_magentaish(r, g, b):
+                    border_samples.append((r, g, b))
         for y in range(h):
             for x in (0, w - 1):
                 r, g, b, a = pixels[x, y]
-                if a <= 0:
-                    continue
-                border_samples.append((r, g, b))
+                if a > 0 and is_magentaish(r, g, b):
+                    border_samples.append((r, g, b))
+
+        # If we somehow didn't get magenta-ish pixels, fall back to "any opaque border"
+        if not border_samples:
+            for x in range(w):
+                for y in (0, h - 1):
+                    r, g, b, a = pixels[x, y]
+                    if a > 0:
+                        border_samples.append((r, g, b))
+            for y in range(h):
+                for x in (0, w - 1):
+                    r, g, b, a = pixels[x, y]
+                    if a > 0:
+                        border_samples.append((r, g, b))
 
         if not border_samples:
-            # Nothing to go on; just return original
             return image_bytes
 
         n = float(len(border_samples))
@@ -257,11 +248,18 @@ def strip_background(image_bytes: bytes) -> bytes:
 
         bg_clear_thresh_sq = BG_CLEAR_THRESH * BG_CLEAR_THRESH
 
+        def dist_sq(c1, c2):
+            dr = c1[0] - c2[0]
+            dg = c1[1] - c2[1]
+            db = c1[2] - c2[2]
+            return dr * dr + dg * dg + db * db
+
         def is_bg(r, g, b):
-            dr = r - bg_r
-            dg = g - bg_g
-            db = b - bg_b
-            return (dr * dr + dg * dg + db * db) <= bg_clear_thresh_sq
+            # Treat strong-magenta pixels as background no matter what.
+            if is_magentaish(r, g, b):
+                return True
+            # Otherwise, clear if close to the estimated border background color.
+            return dist_sq((r, g, b), (bg_r, bg_g, bg_b)) <= bg_clear_thresh_sq
 
         out = Image.new("RGBA", (w, h))
         out_pixels = out.load()
@@ -292,11 +290,7 @@ def load_image_as_base64(path: Path) -> str:
     raw = buf.getvalue()
     return base64.b64encode(raw).decode("utf-8")
 
-
-# ----------------------------------------------------------------------
 # Config / Gemini HTTP
-# ----------------------------------------------------------------------
-
 
 def load_config() -> dict:
     """Load ~/.st_gemini_config.json if present."""
@@ -308,7 +302,6 @@ def load_config() -> dict:
             return {}
     return {}
 
-
 def save_config(cfg: dict) -> None:
     """Save config dictionary to CONFIG_PATH."""
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
@@ -316,7 +309,6 @@ def save_config(cfg: dict) -> None:
         os.chmod(CONFIG_PATH, 0o600)
     except Exception:
         pass
-
 
 def interactive_api_key_setup() -> str:
     """Prompt user for Gemini API key and save it."""
@@ -342,7 +334,6 @@ def interactive_api_key_setup() -> str:
     print(f"Saved API key to {CONFIG_PATH}.")
     return api_key
 
-
 def get_api_key() -> str:
     """Return Gemini API key from env or config, prompting if needed."""
     env_key = os.environ.get("GEMINI_API_KEY")
@@ -352,7 +343,6 @@ def get_api_key() -> str:
     if cfg.get("api_key"):
         return cfg["api_key"]
     return interactive_api_key_setup()
-
 
 def _extract_inline_image_from_response(data: dict) -> Optional[bytes]:
     """Pull the first inline image bytes from a Gemini JSON response."""
@@ -365,136 +355,50 @@ def _extract_inline_image_from_response(data: dict) -> Optional[bytes]:
                 return base64.b64decode(blob["data"])
     return None
 
+def _call_gemini_with_parts(api_key: str, parts: List[dict], context: str) -> bytes:
+    payload = {"contents": [{"parts": parts}]}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
+            if not resp.ok:
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    print(f"[WARN] Gemini API error {resp.status_code} ({context}) attempt {attempt}; retrying...")
+                    last_error = f"Gemini API error {resp.status_code}: {resp.text}"
+                    continue
+                raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
+
+            data = resp.json()
+            raw_bytes = _extract_inline_image_from_response(data)
+            if raw_bytes is not None:
+                return strip_background(raw_bytes)
+
+            last_error = f"No image data in Gemini response ({context})."
+            if attempt < max_retries:
+                print(f"[WARN] Gemini response missing image ({context}) attempt {attempt}; retrying...")
+                continue
+            raise RuntimeError(last_error)
+
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                print(f"[WARN] Gemini call failed ({context}) attempt {attempt}; retrying: {e}")
+                continue
+            raise RuntimeError(f"Gemini call failed after {max_retries} attempts ({context}): {last_error}")
 
 def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
     """Call Gemini image model with an input image + text prompt."""
     parts: List[dict] = [
         {"text": prompt},
-        {
-            "inline_data": {
-                "mime_type": "image/png",
-                "data": image_b64,
-            }
-        },
+        {"inline_data": {"mime_type": "image/png", "data": image_b64}},
     ]
-
-    payload = {"contents": [{"parts": parts}]}
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-
-    max_retries = 3
-    last_error = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
-            if not resp.ok:
-                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    print(
-                        f"[WARN] Gemini API error {resp.status_code} on attempt {attempt}; "
-                        "retrying..."
-                    )
-                    last_error = f"Gemini API error {resp.status_code}: {resp.text}"
-                    continue
-                raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
-
-            data = resp.json()
-            raw_bytes = _extract_inline_image_from_response(data)
-            if raw_bytes is not None:
-                return strip_background(raw_bytes)
-
-            last_error = "No image data found in Gemini response."
-            if attempt < max_retries:
-                print(
-                    f"[WARN] Gemini returned no image data on attempt {attempt}; "
-                    "retrying..."
-                )
-                continue
-            raise RuntimeError(last_error)
-
-        except Exception as e:
-            last_error = str(e)
-            if attempt < max_retries:
-                print(f"[WARN] Gemini call failed on attempt {attempt}; retrying: {e}")
-                continue
-            raise RuntimeError(
-                f"Gemini call failed after {max_retries} attempts: {last_error}"
-            )
+    return _call_gemini_with_parts(api_key, parts, "image_edit")
 
 
-def call_gemini_text_or_refs(
-    api_key: str,
-    prompt: str,
-    ref_images: Optional[List[Path]] = None,
-) -> bytes:
-    """Call Gemini with text prompt plus optional reference images."""
-    parts: List[dict] = [{"text": prompt}]
-
-    if ref_images:
-        for path in ref_images:
-            try:
-                img = Image.open(path).convert("RGBA")
-            except Exception as e:
-                print(f"[WARN] Skipping reference sprite {path}: {e}")
-                continue
-            buf = BytesIO()
-            img.save(buf, format="PNG", lossless=True)
-            data_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            parts.append(
-                {
-                    "inline_data": {
-                        "mime_type": "image/png",
-                        "data": data_b64,
-                    }
-                }
-            )
-
-    payload = {"contents": [{"parts": parts}]}
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-
-    max_retries = 3
-    last_error = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
-            if not resp.ok:
-                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    print(
-                        f"[WARN] Gemini API error {resp.status_code} on attempt {attempt}; "
-                        "retrying..."
-                    )
-                    last_error = f"Gemini API error {resp.status_code}: {resp.text}"
-                    continue
-                raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
-
-            data = resp.json()
-            raw_bytes = _extract_inline_image_from_response(data)
-            if raw_bytes is not None:
-                return strip_background(raw_bytes)
-
-            last_error = "No image data found in Gemini response for text+refs."
-            if attempt < max_retries:
-                print(
-                    f"[WARN] Gemini returned no image data on attempt {attempt}; "
-                    "retrying..."
-                )
-                continue
-            raise RuntimeError(last_error)
-
-        except Exception as e:
-            last_error = str(e)
-            if attempt < max_retries:
-                print(f"[WARN] Gemini call failed on attempt {attempt}; retrying: {e}")
-                continue
-            raise RuntimeError(
-                f"Gemini call failed after {max_retries} attempts: {last_error}"
-            )
-
-
-# ----------------------------------------------------------------------
 # Outfit prompts / expression descriptions
-# ----------------------------------------------------------------------
-
 
 def archetype_to_gender_style(archetype_label: str) -> str:
     """Given an archetype label, return gender style code 'f' or 'm' (default 'f')."""
@@ -502,7 +406,6 @@ def archetype_to_gender_style(archetype_label: str) -> str:
         if lbl == archetype_label:
             return g
     return "f"
-
 
 def load_outfit_prompts(csv_path: Path) -> Dict[str, Dict[str, List[str]]]:
     """
@@ -527,7 +430,6 @@ def load_outfit_prompts(csv_path: Path) -> Dict[str, Dict[str, List[str]]]:
             db.setdefault(archetype, {}).setdefault(outfit_key, []).append(prompt)
 
     return db
-
 
 def build_simple_outfit_description(outfit_key: str, gender_style: str) -> str:
     """Fallback generic outfit description if no CSV prompt is available."""
@@ -558,7 +460,6 @@ def build_simple_outfit_description(outfit_key: str, gender_style: str) -> str:
             "or a beach episode, nothing too revealing"
         )
     return f"a simple outfit that fits this {gender_word}'s personality"
-
 
 def build_outfit_prompts_with_config(
     archetype_label: str,
@@ -592,7 +493,6 @@ def build_outfit_prompts_with_config(
             prompts[key] = custom_prompt or build_simple_outfit_description(key, gender_style)
 
     return prompts
-
 
 def flatten_pose_outfits_to_letter_poses(char_dir: Path) -> List[str]:
     """
@@ -721,22 +621,18 @@ def flatten_pose_outfits_to_letter_poses(char_dir: Path) -> List[str]:
     final_pose_letters.sort()
     return final_pose_letters
 
-
-# ----------------------------------------------------------------------
 # Gemini prompt builders
-# ----------------------------------------------------------------------
-
 
 def build_initial_pose_prompt(gender_style: str) -> str:
     """Prompt to normalize the original sprite (mid-thigh, magenta background)."""
     return (
         "Edit the image of the character, to give them a pure, flat, magenta (#FF00FF) background behind them."
+        "Use a pure, single color, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. If the character has magenta on them, slightly change those pixels to something farther away from the new background color, magenta."
         "Make sure that the character, outfit, or hair end up with none of the magenta background color on them. "
         "Make sure the head, arms, hair, hands, and clothes are all kept within the image."
         "Keep the crop the same from the mid-thigh on up."
         "Dont change the art style either, just edit the background that the character is on, to be that magenta color."
     )
-
 
 def build_expression_prompt(expression_desc: str) -> str:
     """Prompt to change facial expression, keeping style and framing."""
@@ -746,7 +642,7 @@ def build_expression_prompt(expression_desc: str) -> str:
         "Keep the hair volume, hair outlines, and the hair style all the exact same. "
         "Do not change the hairstyle, crop from the mid-thigh up, image size, lighting, or background. "
         "Change the pose of the character, based upon the expression we are giving them. "
-        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. "
+        "Use a pure, single color, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. If the character has magenta on them, slightly change those pixels to something farther away from the new background color, magenta."
         "Do not have the head, arms, hair, or hands extending outside the frame."
         "Do not crop off the head, and don't change the size or proportions of the character."
     )
@@ -760,7 +656,7 @@ def build_outfit_prompt(base_outfit_desc: str, gender_style: str) -> str:
         f"Please change the clothing, pose, hair style, and outfit to match this description: {base_outfit_desc}. "
         "Do not change the body proportions, hair length, crop from the mid-thigh up, or image size. "
         "Do not change how long the character's hair is, but you can style the hair to fit the new outfit."
-        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair "
+        "Use a pure, single color, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. If the character has magenta on them, slightly change those pixels to something farther away from the new background color, magenta."
         "have none of the background color on them. "
         "Do not change the body, chest, and hip proportions to be different from the original."
         "Do not crop off the head, and don't change the size of the character."
@@ -801,18 +697,14 @@ def build_standard_school_uniform_prompt(
     # Shared constraints and ST-format requirements.
     tail = (
         "Again, copy over the outfit from the image sent. The description above is just to help with consistency."
-        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair do not use that magenta color anywhere. "
+        "Use a pure, single color, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. If the character has magenta on them, slightly change those pixels to something farther away from the new background color, magenta."
         "Do not change the art style, size, proportions, or hair length of the character, and keep their arms, hands, and hair all inside the image."
         "Thats all to say, the goal is to copy over the outfit from the reference, to the character we are editing, to replace their current outfit."
     )
 
     return base_intro + uniform_desc + tail
 
-
-# ----------------------------------------------------------------------
 # Tk: voice + archetype + name
-# ----------------------------------------------------------------------
-
 
 def prompt_voice_archetype_and_name(image_path: Path) -> Tuple[str, str, str, str]:
     """
@@ -941,7 +833,6 @@ def prompt_voice_archetype_and_name(image_path: Path) -> Tuple[str, str, str, st
         except Exception:
             pass
 
-
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=5, column=0, pady=(8, 10))
     tk.Button(btns, text="OK", width=16, command=on_ok).pack(side=tk.LEFT, padx=10)
@@ -959,20 +850,48 @@ def prompt_voice_archetype_and_name(image_path: Path) -> Tuple[str, str, str, st
         decision["arch"],
         decision["gstyle"],
     )
-
-
-# ----------------------------------------------------------------------
 # Tk: generic review window
-# ----------------------------------------------------------------------
-
 
 def review_images_for_step(
     image_infos: List[Tuple[Path, str]],
     title_text: str,
     body_text: str,
-) -> str:
-    """Show scrollable strip of images and return 'accept', 'regenerate', or 'cancel'."""
-    decision = {"choice": "cancel"}
+    *,
+    per_item_buttons: Optional[List[List[Tuple[str, str]]]] = None,
+    show_global_regenerate: bool = True,
+) -> Dict[str, Optional[object]]:
+    """
+    Show a scrollable strip of images and return a decision dictionary.
+
+    Args:
+        image_infos:
+            List of (image_path, caption) pairs.
+        title_text:
+            Window title text.
+        body_text:
+            Instructional text.
+        per_item_buttons:
+            Optional list (same length as image_infos) where each entry is a
+            list of (button_label, action_code) tuples. For each image card,
+            those buttons are rendered under the caption. Pressing one closes
+            the window and returns a decision with:
+                {"choice": "per_item", "index": idx, "action": action_code}
+        show_global_regenerate:
+            If True, show a global "Regenerate" button at the bottom that
+            behaves like the old "regenerate all" behavior and returns:
+                {"choice": "regenerate_all", ...}
+
+    Returns:
+        A dict with at least:
+            choice: "accept", "cancel", "regenerate_all", or "per_item"
+            index: index of the image (only for per_item)
+            action: action_code string (only for per_item)
+    """
+    decision: Dict[str, Optional[object]] = {
+        "choice": "cancel",
+        "index": None,
+        "action": None,
+    }
 
     root = tk.Tk()
     root.configure(bg=BG_COLOR)
@@ -1028,6 +947,21 @@ def review_images_for_step(
     thumb_refs: List[ImageTk.PhotoImage] = []
     max_thumb_height = min(600, canvas_h - 40)
 
+    # Normalize per_item_buttons length if provided.
+    if per_item_buttons is not None:
+        if len(per_item_buttons) < len(image_infos):
+            per_item_buttons = per_item_buttons + [[] for _ in range(len(image_infos) - len(per_item_buttons))]
+    else:
+        per_item_buttons = [[] for _ in image_infos]
+
+    def make_item_handler(idx: int, action_code: str):
+        def _handler():
+            decision["choice"] = "per_item"
+            decision["index"] = idx
+            decision["action"] = action_code
+            root.destroy()
+        return _handler
+
     for col_index, (p, caption) in enumerate(image_infos):
         try:
             im = Image.open(p).convert("RGBA")
@@ -1055,7 +989,20 @@ def review_images_for_step(
             fg="black",
             wraplength=tw + 40,
             justify="center",
-        ).pack(pady=(2, 0))
+        ).pack(pady=(2, 2))
+
+        # Optional per-item buttons under each image.
+        btn_cfgs = per_item_buttons[col_index]
+        if btn_cfgs:
+            btn_row = tk.Frame(card, bg=BG_COLOR)
+            btn_row.pack(pady=(0, 2))
+            for label, action_code in btn_cfgs:
+                tk.Button(
+                    btn_row,
+                    text=label,
+                    width=20,
+                    command=make_item_handler(col_index, action_code),
+                ).pack(side=tk.TOP, pady=1)
 
     def _update_scrollregion(_event=None) -> None:
         inner.update_idletasks()
@@ -1070,8 +1017,8 @@ def review_images_for_step(
         decision["choice"] = "accept"
         root.destroy()
 
-    def regenerate() -> None:
-        decision["choice"] = "regenerate"
+    def regenerate_all() -> None:
+        decision["choice"] = "regenerate_all"
         root.destroy()
 
     def cancel():
@@ -1081,17 +1028,20 @@ def review_images_for_step(
         except Exception:
             pass
 
-
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=3, column=0, pady=(6, 10))
     tk.Button(btns, text="Accept", width=20, command=accept).pack(side=tk.LEFT, padx=10)
-    tk.Button(btns, text="Regenerate", width=20, command=regenerate).pack(side=tk.LEFT, padx=10)
-    tk.Button(btns, text="Cancel and Exit", width=20, command=cancel).pack(side=tk.LEFT, padx=10)
+    if show_global_regenerate:
+        tk.Button(btns, text="Regenerate", width=20, command=regenerate_all).pack(
+            side=tk.LEFT, padx=10
+        )
+    tk.Button(btns, text="Cancel and Exit", width=20, command=cancel).pack(
+        side=tk.LEFT, padx=10
+    )
 
     _center_and_clamp(root)
     root.mainloop()
-    return decision["choice"]
-
+    return decision
 
 def review_initial_base_pose(base_pose_path: Path) -> Tuple[str, bool]:
     """
@@ -1164,8 +1114,6 @@ def review_initial_base_pose(base_pose_path: Path) -> Tuple[str, bool]:
             root.destroy()
         except Exception:
             pass
-
-
 
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=3, column=0, pady=(6, 10))
@@ -1256,12 +1204,7 @@ def prompt_for_crop(
 
     return result["y"], used_gallery 
 
-
-
-# ----------------------------------------------------------------------
 # Tk: eye line + name color
-# ----------------------------------------------------------------------
-
 
 def prompt_for_eye_and_hair(image_path: Path) -> Tuple[float, str]:
     """
@@ -1390,7 +1333,6 @@ def prompt_for_eye_and_hair(image_path: Path) -> Tuple[float, str]:
     print(f"[INFO] Name color: {result['name_color']}")
     return float(result["eye_line"]), str(result["name_color"])
 
-
 def pick_representative_outfit(char_dir: Path) -> Path:
     """
     Choose a full-body outfit image to use for eye-line and scale selection.
@@ -1427,11 +1369,7 @@ def pick_representative_outfit(char_dir: Path) -> Path:
 
     raise RuntimeError(f"No representative outfit image found in {char_dir}")
 
-
-# ----------------------------------------------------------------------
 # Tk: scale vs reference
-# ----------------------------------------------------------------------
-
 
 def prompt_for_scale(image_path: Path, user_eye_line_ratio: Optional[float] = None) -> float:
     """Side-by-side scaling UI vs reference_sprites, returns chosen scale."""
@@ -1566,8 +1504,6 @@ def prompt_for_scale(image_path: Path, user_eye_line_ratio: Optional[float] = No
             pass
         sys.exit(0)
 
-
-
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=4, column=0, columnspan=2, pady=(6, 10))
     tk.Button(btns, text="Done - Use This Scale", command=done).pack(side=tk.LEFT, padx=10)
@@ -1601,7 +1537,6 @@ def generate_expression_sheets_for_root(root_folder: Path) -> None:
         print(f"[WARN] expression_sheet_maker.py failed: {e}")
     except Exception as e:
         print(f"[WARN] Could not run expression_sheet_maker.py: {e}")
-
 
 def finalize_character(
     char_dir: Path,
@@ -1646,11 +1581,7 @@ def finalize_character(
 
     print(f"=== Finished character: {display_name} ({char_dir.name}) ===")
 
-
-# ----------------------------------------------------------------------
 # Gemini generation helpers
-# ----------------------------------------------------------------------
-
 
 def generate_initial_pose_once(
     api_key: str,
@@ -1665,6 +1596,48 @@ def generate_initial_pose_once(
     img_bytes = call_gemini_image_edit(api_key, prompt, image_b64)
     final_path = save_image_bytes_as_png(img_bytes, out_stem)
     print(f"  Saved base pose to: {final_path}")
+    return final_path
+
+def generate_single_outfit(
+    api_key: str,
+    base_pose_path: Path,
+    outfits_dir: Path,
+    gender_style: str,
+    outfit_key: str,
+    outfit_desc: str,
+    outfit_prompt_config: Dict[str, Dict[str, Optional[str]]],
+    archetype_label: str,
+) -> Path:
+    """
+    Generate or regenerate a *single* outfit image for the given key.
+
+    This is used both by the bulk outfit generator and by the
+    per-outfit "regenerate" buttons in the review window.
+    """
+    outfits_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = outfit_prompt_config.get(outfit_key, {})
+
+    # Special handling for standardized school uniform.
+    if outfit_key == "uniform" and cfg.get("use_standard_uniform"):
+        final_path = generate_standard_uniform_outfit(
+            api_key,
+            base_pose_path,
+            outfits_dir,
+            gender_style,
+            archetype_label,
+            outfit_desc,
+        )
+        print(f"  Saved standardized outfit '{outfit_key}' to: {final_path}")
+        return final_path
+
+    # Normal text-prompt-based outfit.
+    image_b64 = load_image_as_base64(base_pose_path)
+    out_stem = outfits_dir / outfit_key.capitalize()
+    prompt = build_outfit_prompt(outfit_desc, gender_style)
+    img_bytes = call_gemini_image_edit(api_key, prompt, image_b64)
+    final_path = save_image_bytes_as_png(img_bytes, out_stem)
+    print(f"  Saved outfit '{outfit_key}' to: {final_path}")
     return final_path
 
 def generate_outfits_once(
@@ -1688,7 +1661,6 @@ def generate_outfits_once(
     the uniform outfit is generated using the standardized school uniform
     reference sprites instead of a CSV/custom prompt.
     """
-
     outfits_dir.mkdir(parents=True, exist_ok=True)
     paths: List[Path] = []
 
@@ -1700,31 +1672,18 @@ def generate_outfits_once(
         base_img.save(base_out_path, format="PNG", lossless=True)
         paths.append(base_out_path)
 
-    image_b64 = load_image_as_base64(base_pose_path)
-
+    # Generate each selected outfit key.
     for key, desc in outfit_descriptions.items():
-        cfg = outfit_prompt_config.get(key, {})
-
-        # Special handling for standardized school uniform.
-        if key == "uniform" and cfg.get("use_standard_uniform"):
-            final_path = generate_standard_uniform_outfit(
-                api_key,
-                base_pose_path,
-                outfits_dir,
-                gender_style,
-                archetype_label,
-                desc,
-            )
-            paths.append(final_path)
-            continue
-
-        # Normal outfit generation path (random or custom prompt already
-        # baked into 'desc' by build_outfit_prompts_with_config).
-        out_stem = outfits_dir / key.capitalize()
-        prompt = build_outfit_prompt(desc, gender_style)
-        img_bytes = call_gemini_image_edit(api_key, prompt, image_b64)
-        final_path = save_image_bytes_as_png(img_bytes, out_stem)
-        print(f"  Saved outfit '{key}' to: {final_path}")
+        final_path = generate_single_outfit(
+            api_key,
+            base_pose_path,
+            outfits_dir,
+            gender_style,
+            key,
+            desc,
+            outfit_prompt_config,
+            archetype_label,
+        )
         paths.append(final_path)
 
     return paths
@@ -1797,6 +1756,44 @@ def generate_expressions_for_single_outfit_once(
 
     return generated_paths
 
+def regenerate_single_expression(
+    api_key: str,
+    outfit_path: Path,
+    out_dir: Path,
+    expressions_sequence: List[Tuple[str, str]],
+    expr_index: int,
+) -> Path:
+    """
+    Regenerate a single expression image for one outfit.
+
+    expr_index is the numeric index into expressions_sequence and also
+    the filename stem (0, 1, 2, ...).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Neutral 0 is always just the outfit itself; no need to call Gemini.
+    if expr_index == 0:
+        outfit_img = Image.open(outfit_path).convert("RGBA")
+        neutral_stem = out_dir / "0"
+        neutral_path = save_img_webp_or_png(outfit_img, neutral_stem)
+        print(f"  [Expr] Regenerated neutral expression 0 -> {neutral_path}")
+        return neutral_path
+
+    if expr_index < 0 or expr_index >= len(expressions_sequence):
+        raise ValueError(f"Expression index {expr_index} out of range.")
+
+    _, desc = expressions_sequence[expr_index]
+
+    image_b64 = load_image_as_base64(outfit_path)
+    out_stem = out_dir / str(expr_index)
+    prompt = build_expression_prompt(desc)
+    img_bytes = call_gemini_image_edit(api_key, prompt, image_b64)
+    final_path = save_image_bytes_as_png(img_bytes, out_stem)
+    print(
+        f"  [Expr] Regenerated expression index {expr_index} "
+        f"for '{outfit_path.stem}' -> {final_path}"
+    )
+    return final_path
 
 def generate_and_review_expressions_for_pose(
     api_key: str,
@@ -1808,9 +1805,13 @@ def generate_and_review_expressions_for_pose(
     """
     For a given pose directory (e.g., 'a'), iterate each outfit and:
 
-      - Generate expression set.
+      - Generate expression set (once per outfit).
       - Show review window.
-      - Allow Accept / Regenerate / Cancel per outfit.
+      - Allow:
+          * Accept (keep all as-is),
+          * Regenerate all expressions for that outfit,
+          * Regenerate a single expression via buttons under each image,
+          * Cancel the whole pipeline.
     """
     outfits_dir = pose_dir / "outfits"
     faces_root = pose_dir / "faces"
@@ -1825,36 +1826,103 @@ def generate_and_review_expressions_for_pose(
 
         outfit_name = outfit_path.stem
 
+        # First, build the full expression set once.
+        generate_expressions_for_single_outfit_once(
+            api_key,
+            pose_dir,
+            outfit_path,
+            faces_root,
+            expressions_sequence=expressions_sequence,
+        )
+
+        # Determine the folder where the expression images for this outfit live.
+        if outfit_name.lower() == "base":
+            out_dir = faces_root / "face"
+        else:
+            out_dir = faces_root / outfit_name
+
         while True:
-            expr_paths = generate_expressions_for_single_outfit_once(
-                api_key,
-                pose_dir,
-                outfit_path,
-                faces_root,
-                expressions_sequence=expressions_sequence,
-            )
+            # Collect current expression images from disk, sorted by index.
+            expr_paths: List[Path] = []
+            for p in sorted(out_dir.iterdir(), key=lambda q: q.stem):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in (".png", ".webp"):
+                    continue
+                expr_paths.append(p)
+
+            # Ensure numeric ordering (0, 1, 2, ...).
+            expr_paths.sort(key=lambda q: int(q.stem))
 
             infos = [
                 (
                     p,
-                    f"Pose {pose_label} – {outfit_name} – {p.relative_to(char_dir)}",
+                    f"Pose {pose_label} – {outfit_name} – expression {p.stem} "
+                    f"({expressions_sequence[int(p.stem)][0] if int(p.stem) < len(expressions_sequence) else '?'})",
                 )
                 for p in expr_paths
             ]
 
-            choice = review_images_for_step(
+            # One "regenerate this expression" button under each expression.
+            per_buttons: List[List[Tuple[str, str]]] = [
+                [("Regenerate this expression", "regen_expr")] for _ in expr_paths
+            ]
+
+            decision = review_images_for_step(
                 infos,
                 f"Review Expressions for Pose {pose_label} – {outfit_name}",
-                "These expressions are generated for this single pose/outfit.\n"
-                "Accept them, regenerate, or cancel.",
+                (
+                    "These expressions are generated for this single pose/outfit.\n"
+                    "Accept them, regenerate all, regenerate a single expression, or cancel."
+                ),
+                per_item_buttons=per_buttons,
+                show_global_regenerate=True,
             )
+
+            choice = decision.get("choice")
 
             if choice == "accept":
                 break
-            if choice == "regenerate":
-                continue
             if choice == "cancel":
                 sys.exit(0)
+
+            if choice == "regenerate_all":
+                # Wipe and rebuild the whole expression set for this outfit.
+                generate_expressions_for_single_outfit_once(
+                    api_key,
+                    pose_dir,
+                    outfit_path,
+                    faces_root,
+                    expressions_sequence=expressions_sequence,
+                )
+                continue
+
+            if choice == "per_item":
+                idx_obj = decision.get("index")
+                if idx_obj is None:
+                    continue
+                idx = int(idx_obj)
+                if idx < 0 or idx >= len(expr_paths):
+                    continue
+
+                # Card index -> expression index: the filename stem.
+                try:
+                    expr_index = int(expr_paths[idx].stem)
+                except ValueError:
+                    continue
+
+                if expr_index < 0 or expr_index >= len(expressions_sequence):
+                    continue
+
+                regenerate_single_expression(
+                    api_key,
+                    outfit_path,
+                    out_dir,
+                    expressions_sequence,
+                    expr_index,
+                )
+                # Loop to show the updated images.
+                continue
 
 def get_reference_images_for_archetype(archetype_label: str) -> List[Path]:
     """
@@ -1991,7 +2059,6 @@ def build_prompt_for_idea(concept: str, archetype_label: str, gender_style: str)
         "Use clean line art and vibrant but not overly saturated colors that match the reference style."
     )
 
-
 def generate_initial_character_from_prompt(
     api_key: str,
     concept: str,
@@ -2030,11 +2097,7 @@ def generate_initial_character_from_prompt(
     print(f"[INFO] Saved prompt-generated source sprite to: {final_path}")
     return final_path
 
-
-# ----------------------------------------------------------------------
 # Tk: source mode + prompt entry
-# ----------------------------------------------------------------------
-
 
 def prompt_source_mode() -> str:
     """Ask whether to generate from an image or from a text prompt."""
@@ -2100,7 +2163,6 @@ def prompt_source_mode() -> str:
     root.mainloop()
 
     return decision["mode"]
-
 
 def prompt_character_idea_and_archetype() -> Tuple[str, str, str, str, str]:
     """
@@ -2259,7 +2321,6 @@ def prompt_character_idea_and_archetype() -> Tuple[str, str, str, str, str]:
         except Exception:
             pass
 
-
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=4, column=0, pady=(6, 10))
     tk.Button(btns, text="OK", width=16, command=on_ok).pack(side=tk.LEFT, padx=10)
@@ -2279,11 +2340,7 @@ def prompt_character_idea_and_archetype() -> Tuple[str, str, str, str, str]:
         decision["gstyle"],
     )
 
-
-# ----------------------------------------------------------------------
 # Tk: generation options (outfits + expressions)
-# ----------------------------------------------------------------------
-
 
 def prompt_outfits_and_expressions(
     archetype_label: str,
@@ -2561,7 +2618,6 @@ def prompt_outfits_and_expressions(
         chk_expr.pack(anchor="w", padx=6, pady=2)
         expr_vars[key] = var
 
-
     decision = {
         "ok": False,
         "outfits": [],
@@ -2634,7 +2690,6 @@ def prompt_outfits_and_expressions(
         except Exception:
             pass
 
-
     btns = tk.Frame(root, bg=BG_COLOR)
     btns.grid(row=2, column=0, pady=(6, 10))
     tk.Button(btns, text="OK", width=16, command=on_ok).pack(side=tk.LEFT, padx=10)
@@ -2653,12 +2708,7 @@ def prompt_outfits_and_expressions(
         decision["expr_seq"],
         decision["config"],
     )
-
-# ----------------------------------------------------------------------
 # Character pipeline (per source image)
-# ----------------------------------------------------------------------
-
-
 def process_single_character(
     api_key: str,
     image_path: Path,
@@ -2698,7 +2748,6 @@ def process_single_character(
     outfit_prompt_config,
     ) = prompt_outfits_and_expressions(archetype_label, gender_style)
 
-
     print(f"[INFO] Selected outfits (Base always included): {selected_outfit_keys}")
     print(
         "[INFO] Selected expressions (including neutral): "
@@ -2714,7 +2763,6 @@ def process_single_character(
         else:
             mode_str = "custom"
         print(f"  - {key}: {mode_str}")
-
 
     char_folder_name = get_unique_folder_name(output_root, display_name)
     char_dir = output_root / char_folder_name
@@ -2745,43 +2793,168 @@ def process_single_character(
         if choice == "cancel":
             sys.exit(0)
 
-    print("[INFO] Generating outfits for pose A...")
+        print("[INFO] Generating outfits for pose A...")
+
+    outfits_dir = a_dir / "outfits"
+    outfits_dir.mkdir(parents=True, exist_ok=True)
+
+    # Current text prompts per outfit key; this will be updated when the user
+    # asks for a "new random outfit" for a given key.
+    current_outfit_prompts = build_outfit_prompts_with_config(
+        archetype_label,
+        gender_style,
+        selected_outfit_keys,
+        outfit_db,
+        outfit_prompt_config,
+    )
+
+    # Initial generation: make Base (if requested) and all outfits once.
+    generate_outfits_once(
+        api_key,
+        a_base_path,
+        outfits_dir,
+        gender_style,
+        current_outfit_prompts,
+        outfit_prompt_config,
+        archetype_label,
+        include_base_outfit=use_base_as_outfit,
+    )
+
+    # Review loop: the user can regenerate individual outfits as many times
+    # as they want without touching the others.
     while True:
-        outfit_prompts_orig = build_outfit_prompts_with_config(
-            archetype_label,
-            gender_style,
-            selected_outfit_keys,
-            outfit_db,
-            outfit_prompt_config,
-        )
+        a_out_paths: List[Path] = []
+        per_buttons: List[List[Tuple[str, str]]] = []
+        index_to_outfit_key: Dict[int, str] = {}
 
-        a_out_paths = generate_outfits_once(
-            api_key,
-            a_base_path,
-            a_dir / "outfits",
-            gender_style,
-            outfit_prompts_orig,
-            outfit_prompt_config,
-            archetype_label,
-            include_base_outfit=use_base_as_outfit,
-        )
+        # Collect current outfit images from disk.
+        for p in sorted(outfits_dir.iterdir()):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in (".png", ".webp"):
+                continue
 
+            a_out_paths.append(p)
+            stem_lower = p.stem.lower()
 
+            # Try to match this file back to one of the logical outfit keys.
+            matched_key: Optional[str] = None
+            for key in selected_outfit_keys:
+                if key.lower() == stem_lower or key.capitalize().lower() == stem_lower:
+                    matched_key = key
+                    break
+
+            # Decide which per-card buttons to show.
+            btn_list: List[Tuple[str, str]] = []
+            if matched_key is not None:
+                cfg = outfit_prompt_config.get(matched_key, {})
+                # Every logical outfit can be regenerated with the same prompt.
+                btn_list.append(("Regenerate same outfit", "same"))
+                # The "new random outfit" button should only appear when we are
+                # actually using the CSV/random system (and not the standardized
+                # school uniform case).
+                if not (matched_key == "uniform" and cfg.get("use_standard_uniform")):
+                    btn_list.append(("New random outfit", "new"))
+                index_to_outfit_key[len(a_out_paths) - 1] = matched_key
+
+            per_buttons.append(btn_list)
 
         a_infos = [(p, f"Pose A – {p.name}") for p in a_out_paths]
-        choice = review_images_for_step(
+
+        decision = review_images_for_step(
             a_infos,
             "Review Outfits for Pose A",
-            "Accept these outfits, regenerate them (random outfits will pick new "
-            "CSV prompts next time; custom outfits will keep the same prompts), "
-            "or cancel.",
+            (
+                "Accept these outfits, regenerate individual outfits (random outfits will pick new "
+                "CSV prompts when you choose 'New random outfit'; custom outfits and standard "
+                "uniforms will keep the same prompt), or cancel."
+            ),
+            per_item_buttons=per_buttons,
+            show_global_regenerate=False,  # we now regenerate outfits individually
         )
+
+        choice = decision.get("choice")
+
         if choice == "accept":
             break
-        if choice == "regenerate":
-            continue
         if choice == "cancel":
             sys.exit(0)
+
+        if choice == "per_item":
+            idx = decision.get("index")
+            action = decision.get("action")
+            if idx is None or action is None:
+                continue
+
+            outfit_key = index_to_outfit_key.get(int(idx))
+            if not outfit_key:
+                # The user clicked under something that is not a logical outfit
+                # (for example, the copied Base.png). Ignore and redraw.
+                continue
+
+            # If they asked for a *new* random outfit, roll a fresh prompt
+            # using the same CSV/random logic as the initial generation.
+            if action == "new":
+                new_prompt_dict = build_outfit_prompts_with_config(
+                    archetype_label,
+                    gender_style,
+                    [outfit_key],
+                    outfit_db,
+                    outfit_prompt_config,
+                )
+                current_outfit_prompts[outfit_key] = new_prompt_dict[outfit_key]
+
+            # If they asked for "same", we reuse the existing description in
+            # current_outfit_prompts. If that somehow does not exist yet, we
+            # fall back to a freshly built one.
+            desc = current_outfit_prompts.get(outfit_key)
+            if not desc:
+                fallback_prompt_dict = build_outfit_prompts_with_config(
+                    archetype_label,
+                    gender_style,
+                    [outfit_key],
+                    outfit_db,
+                    outfit_prompt_config,
+                )
+                desc = fallback_prompt_dict[outfit_key]
+                current_outfit_prompts[outfit_key] = desc
+
+            # Actually regenerate just this one outfit image.
+            generate_single_outfit(
+                api_key,
+                a_base_path,
+                outfits_dir,
+                gender_style,
+                outfit_key,
+                desc,
+                outfit_prompt_config,
+                archetype_label,
+            )
+
+            # Loop again to show the updated outfits.
+            continue
+
+        # Safety: if someone ever calls this with show_global_regenerate=True
+        # again, we can still support "regenerate_all".
+        if choice == "regenerate_all":
+            current_outfit_prompts = build_outfit_prompts_with_config(
+                archetype_label,
+                gender_style,
+                selected_outfit_keys,
+                outfit_db,
+                outfit_prompt_config,
+            )
+            generate_outfits_once(
+                api_key,
+                a_base_path,
+                outfits_dir,
+                gender_style,
+                current_outfit_prompts,
+                outfit_prompt_config,
+                archetype_label,
+                include_base_outfit=use_base_as_outfit,
+            )
+            continue
 
     print("[INFO] Generating expressions for pose A (per outfit)...")
     generate_and_review_expressions_for_pose(
@@ -2797,7 +2970,6 @@ def process_single_character(
     # After finishing this character, generate expression sheets for all
     # characters under the same output root so sheets are immediately usable.
     generate_expression_sheets_for_root(output_root)
-
 
 def run_pipeline(output_root: Path, game_name: Optional[str] = None) -> None:
     """
@@ -2895,15 +3067,17 @@ def run_pipeline(output_root: Path, game_name: Optional[str] = None) -> None:
                 output_root,
             )
 
-            choice = review_images_for_step(
+            decision = review_images_for_step(
                 [(src_path, f"Prompt-generated base: {src_path.name}")],
                 "Review Prompt-Generated Base Sprite",
                 "Accept this as the starting sprite, regenerate it, or cancel.",
             )
 
+            choice = decision.get("choice")
+
             if choice == "accept":
                 break
-            if choice == "regenerate":
+            if choice == "regenerate_all":
                 continue
             if choice == "cancel":
                 sys.exit(0)
@@ -2926,10 +3100,7 @@ def run_pipeline(output_root: Path, game_name: Optional[str] = None) -> None:
     print("\nCharacter processed.")
     print(f"Final sprite folder(s) are in:\n  {output_root}")
 
-# ----------------------------------------------------------------------
 # CLI entry point
-# ----------------------------------------------------------------------
-
 
 def main() -> None:
     """

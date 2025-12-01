@@ -197,11 +197,14 @@ def save_image_bytes_as_png(image_bytes: bytes, dest_stem: Path) -> Path:
 
 def strip_background(image_bytes: bytes) -> bytes:
     """
-    Strip a flat-ish magenta background by sampling magenta-ish border pixels
-    and clearing pixels close to that color or close to pure #FF00FF.
+    Strip a flat-ish magenta background.
+    Strategy:
+      1) Load RGBA.
+      2) Collect all opaque border pixels.
+      3) Estimate background color as the average of those border pixels.
+      4) Clear any pixel sufficiently close to that background color.
     """
-    BG_CLEAR_THRESH = 40  # a bit tighter so we don't eat hair as much
-    MAGENTA = (255, 0, 255)
+    BG_CLEAR_THRESH = 56  # tweak this if it's too aggressive or too gentle
 
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGBA")
@@ -210,35 +213,24 @@ def strip_background(image_bytes: bytes) -> bytes:
 
         border_samples = []
 
-        def is_magentaish(r, g, b):
-            return r >= 200 and b >= 200 and g <= 80
-
-        # Collect magenta-ish border pixels first
+        # top and bottom rows
         for x in range(w):
             for y in (0, h - 1):
                 r, g, b, a = pixels[x, y]
-                if a > 0 and is_magentaish(r, g, b):
-                    border_samples.append((r, g, b))
+                if a <= 0:
+                    continue
+                border_samples.append((r, g, b))
+
+        # left and right columns
         for y in range(h):
             for x in (0, w - 1):
                 r, g, b, a = pixels[x, y]
-                if a > 0 and is_magentaish(r, g, b):
-                    border_samples.append((r, g, b))
-
-        # If we somehow didn't get magenta-ish pixels, fall back to "any opaque border"
-        if not border_samples:
-            for x in range(w):
-                for y in (0, h - 1):
-                    r, g, b, a = pixels[x, y]
-                    if a > 0:
-                        border_samples.append((r, g, b))
-            for y in range(h):
-                for x in (0, w - 1):
-                    r, g, b, a = pixels[x, y]
-                    if a > 0:
-                        border_samples.append((r, g, b))
+                if a <= 0:
+                    continue
+                border_samples.append((r, g, b))
 
         if not border_samples:
+            # Nothing to go on; just return original
             return image_bytes
 
         n = float(len(border_samples))
@@ -248,18 +240,11 @@ def strip_background(image_bytes: bytes) -> bytes:
 
         bg_clear_thresh_sq = BG_CLEAR_THRESH * BG_CLEAR_THRESH
 
-        def dist_sq(c1, c2):
-            dr = c1[0] - c2[0]
-            dg = c1[1] - c2[1]
-            db = c1[2] - c2[2]
-            return dr * dr + dg * dg + db * db
-
         def is_bg(r, g, b):
-            # Treat strong-magenta pixels as background no matter what.
-            if is_magentaish(r, g, b):
-                return True
-            # Otherwise, clear if close to the estimated border background color.
-            return dist_sq((r, g, b), (bg_r, bg_g, bg_b)) <= bg_clear_thresh_sq
+            dr = r - bg_r
+            dg = g - bg_g
+            db = b - bg_b
+            return (dr * dr + dg * dg + db * db) <= bg_clear_thresh_sq
 
         out = Image.new("RGBA", (w, h))
         out_pixels = out.load()

@@ -221,7 +221,7 @@ def strip_background(image_bytes: bytes) -> bytes:
       3) Estimate background color as the average of those border pixels.
       4) Clear any pixel sufficiently close to that background color.
     """
-    BG_CLEAR_THRESH = 40  # tweak this if it's too aggressive or too gentle
+    BG_CLEAR_THRESH = 56  # tweak this if it's too aggressive or too gentle
 
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGBA")
@@ -419,90 +419,6 @@ def call_gemini_image_edit(api_key: str, prompt: str, image_b64: str) -> bytes:
             raise RuntimeError(
                 f"Gemini call failed after {max_retries} attempts: {last_error}"
             )
-
-def call_gemini_uniform_style_transfer(
-    api_key: str,
-    base_image_path: Path,
-    uniform_image_path: Path,
-) -> bytes:
-    """
-    Ask Gemini to redraw the *base* character wearing ONLY the clothes
-    from the uniform image.
-
-    We interleave short text descriptions with each image so it's
-    crystal-clear which one is the character to keep and which is
-    just the outfit reference.
-    """
-    # Load base character image
-    base_img = Image.open(base_image_path).convert("RGBA")
-    buf = BytesIO()
-    base_img.save(buf, format="PNG", lossless=True)
-    base_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-    # Load uniform reference image
-    uni_img = Image.open(uniform_image_path).convert("RGBA")
-    buf2 = BytesIO()
-    uni_img.save(buf2, format="PNG", lossless=True)
-    uni_b64 = base64.b64encode(buf2.getvalue()).decode("utf-8")
-
-    parts = [
-        {
-            "text": (
-                "This is the MAIN CHARACTER sprite. Keep THIS character's face, hair color, "
-                "body shape, pose, and proportions exactly the same:"
-            )
-        },
-        {
-            "inline_data": {
-                "mime_type": "image/png",
-                "data": base_b64,
-            }
-        },
-        {
-            "text": (
-                "This is ONLY an EXAMPLE of the SCHOOL UNIFORM design. Do NOT copy this "
-                "character's face, hair, or body. ONLY copy the clothing style, colors, "
-                "and accessories from this uniform example:"
-            )
-        },
-        {
-            "inline_data": {
-                "mime_type": "image/png",
-                "data": uni_b64,
-            }
-        },
-        {
-            "text": (
-                "Now, redraw the MAIN CHARACTER wearing the same uniform design as the "
-                "uniform example: same jacket/shirt style, tie/bow, skirt/pants, and "
-                "color scheme. Keep the main character's pose, body proportions, and "
-                "hair length the same as in the first image.\n\n"
-                "Crop from mid-thigh up and use a flat #FF00FF background behind the "
-                "character. Make sure the background color is not used on the character "
-                "at all."
-            )
-        },
-    ]
-
-    payload = {
-        "contents": [{"parts": parts}],
-        # Optional, but helps reduce randomness so uniforms match more closely.
-        "generationConfig": {
-            "temperature": 0.25,
-        },
-    }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-
-    resp = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
-    if not resp.ok:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
-
-    data = resp.json()
-    raw_bytes = _extract_inline_image_from_response(data)
-    if raw_bytes is None:
-        raise RuntimeError("No image data in Gemini response for uniform style transfer.")
-
-    return strip_background(raw_bytes)
 
 
 def call_gemini_text_or_refs(
@@ -825,13 +741,12 @@ def build_initial_pose_prompt(gender_style: str) -> str:
 def build_expression_prompt(expression_desc: str) -> str:
     """Prompt to change facial expression, keeping style and framing."""
     return (
-        "Edit the input visual novel sprite in the same art style. "
+        "Edit the inputed visual novel sprite in the same art style. "
         f"Change the facial expression to match this description: {expression_desc}. "
         "Keep the hair volume, hair outlines, and the hair style all the exact same. "
         "Do not change the hairstyle, crop from the mid-thigh up, image size, lighting, or background. "
-        "Change the pose of the character, based upon the expression we are making. "
-        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair "
-        "have none of the background color on them. "
+        "Change the pose of the character, based upon the expression we are giving them. "
+        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair have none of the background color on them. "
         "Do not have the head, arms, hair, or hands extending outside the frame."
         "Do not crop off the head, and don't change the size or proportions of the character."
     )
@@ -844,12 +759,54 @@ def build_outfit_prompt(base_outfit_desc: str, gender_style: str) -> str:
         f"Edit the inputed {gender_clause} visual novel sprite, in the same art style. "
         f"Please change the clothing, pose, hair style, and outfit to match this description: {base_outfit_desc}. "
         "Do not change the body proportions, hair length, crop from the mid-thigh up, or image size. "
-        "Change the hair style to match the outfit, but do not change the hair length. "
+        "Do not change how long the character's hair is, but you can style the hair to fit the new outfit."
         "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair "
         "have none of the background color on them. "
         "Do not change the body, chest, and hip proportions to be different from the original."
         "Do not crop off the head, and don't change the size of the character."
     )
+
+def build_standard_school_uniform_prompt(
+    archetype_label: str,
+    gender_style: str,
+) -> str:
+    """
+    Build a standardized school-uniform prompt that matches the rest of the
+    outfit prompts, but is specific to the canonical uniform.
+
+    This uses the archetype label and the gender style ("f" or "m") to describe
+    the character, and then describes the school uniform in text. The cropped
+    uniform reference image is used as a visual backup, but this text gives
+    Gemini a clear, redundant description.
+    """
+    gender_word = "girl" if gender_style == "f" else "boy"
+
+    # Base description that applies to both variants.
+    base_intro = (
+        f"Edit the inputed {archetype_label} visual novel sprite, to give them the outfit we have also attached."
+        "For redundency, I am going to also describe the outfit below, but using the reference image is your first priority when it comes to what this outfit needs to look like."
+    )
+
+    if gender_style == "f":
+        # Female student uniform: blazer + bow + pleated skirt description.
+        uniform_desc = (
+            "She should be wearing: A navy blue tailored sleeveless blazer hybrid, tightly fitted to the torso. The blazer has gold piping along all the outer edges. The front features a double-breasted design with two rows of two gold buttons. The vest dips into a sharp angled hem near the waist, creating a stylish contour. Underneath it is a white short-sleeved dress shirt. The sleeve has a school crest patch on the upper arm: gold/yellow with an emblem inside. Her arms are bare below the sleeves. She should have on a bright red necktie with white stripes near the bottom. A short, red, plaid, pleated skirt finishes out the outfit. No ribbons."
+        )
+    else:
+        # Male student uniform: blazer + tie + slacks description.
+        uniform_desc = (
+            "He should be wearing: A white short-sleeved dress shirt. The sleeve has a school crest patch on the upper arm: gold/yellow with an emblem inside. He should have on a  bright red necktie with white stripes near the bottom. A pair of dark-colored slacks with a belt, which the white shirt tucks into, completes the look."
+        )
+
+    # Shared constraints and ST-format requirements.
+    tail = (
+        "Again, copy over the outfit from the image sent. The description above is just to help with consistency."
+        "Use a pure, flat magenta background (#FF00FF) behind the character, and make sure the character, outfit, and hair do not use that magenta color anywhere. "
+        "Do not change the art style, size, proportions, or hair length of the character, and keep their arms, hands, and hair all inside the image."
+        "Thats all to say, the goal is to copy over the outfit from the reference, to the character we are editing, to replace their current outfit."
+    )
+
+    return base_intro + uniform_desc + tail
 
 
 # ----------------------------------------------------------------------
@@ -1960,31 +1917,58 @@ def generate_standard_uniform_outfit(
     outfits_dir: Path,
     gender_style: str,
     archetype_label: str,
-    outfit_desc: str,
+    outfit_desc: str,  # kept for signature compatibility, not used directly now
 ) -> Path:
     """
-    Generate a uniform outfit using base sprite + exactly one uniform reference.
+    Generate the standardized school uniform outfit using:
 
-    We call a dedicated style-transfer helper so that the model clearly
-    understands which image is the 'real' character.
+      - The base pose as the main character to keep.
+      - A cropped uniform reference image (gender-specific) as visual guidance.
+      - A single, archetype- and gender-aware text prompt that describes the
+        school uniform in words.
+
+    This keeps the prompting style consistent with the rest of the pipeline
+    and avoids the custom 'parts' scheme.
     """
     outfits_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect the uniform reference
+    # Collect the uniform reference image(s) for this gender.
     uniform_refs = get_standard_uniform_reference_images(gender_style)
     if not uniform_refs:
-        print("[WARN] No uniform reference found, falling back to normal prompt")
+        # If we somehow do not have a uniform ref, fall back to the normal
+        # outfit prompt path so 'uniform' still works instead of erroring.
+        print("[WARN] No uniform reference found, falling back to normal prompt-based uniform.")
         image_b64 = load_image_as_base64(base_pose_path)
+        # Use the normal outfit prompt builder as a last resort.
         prompt = build_outfit_prompt(outfit_desc, gender_style)
         img_bytes = call_gemini_image_edit(api_key, prompt, image_b64)
         out_stem = outfits_dir / "Uniform"
         final_path = save_image_bytes_as_png(img_bytes, out_stem)
+        print(f"  Saved fallback prompt-based uniform to: {final_path}")
         return final_path
 
+    # Prefer the first uniform reference (you said you're cropping them already).
     uniform_ref = uniform_refs[0]
-
     print(f"[INFO] Using uniform reference: {uniform_ref}")
-    img_bytes = call_gemini_uniform_style_transfer(api_key, base_pose_path, uniform_ref)
+
+    # Build a unified, standardized uniform prompt that matches your style.
+    uniform_prompt = build_standard_school_uniform_prompt(
+        archetype_label,
+        gender_style,
+    )
+
+    # Call Gemini with:
+    #   - the prompt
+    #   - two reference images:
+    #       1) the base pose (the character to keep)
+    #       2) the cropped uniform example (clothes to copy)
+    #
+    # The prompt text clearly describes which image is which conceptually.
+    img_bytes = call_gemini_text_or_refs(
+        api_key,
+        uniform_prompt,
+        ref_images=[base_pose_path, uniform_ref],
+    )
 
     out_stem = outfits_dir / "Uniform"
     final_path = save_image_bytes_as_png(img_bytes, out_stem)
@@ -2506,19 +2490,56 @@ def prompt_outfits_and_expressions(
         mode_var.trace_add("write", updater)
         updater()
 
-    # Expressions column
+    # Expressions column (with vertical scrollbar)
     expr_frame = tk.LabelFrame(
         body_frame,
         text="Expressions (neutral is always included):",
         bg=BG_COLOR,
     )
     expr_frame.grid(row=0, column=1, padx=5, pady=4, sticky="nsew")
+    expr_frame.grid_rowconfigure(0, weight=1)
+    expr_frame.grid_columnconfigure(0, weight=1)
 
+    # Canvas + scrollbar so a long list of expressions can be scrolled.
+    expr_canvas = tk.Canvas(
+        expr_frame,
+        bg=BG_COLOR,
+        highlightthickness=0,
+    )
+    expr_canvas.grid(row=0, column=0, sticky="nsew")
+
+    expr_scrollbar = tk.Scrollbar(
+        expr_frame,
+        orient=tk.VERTICAL,
+        command=expr_canvas.yview,
+    )
+    expr_scrollbar.grid(row=0, column=1, sticky="ns")
+
+    expr_canvas.configure(yscrollcommand=expr_scrollbar.set)
+
+    # Inner frame that actually holds the labels and checkboxes.
+    expr_inner = tk.Frame(expr_canvas, bg=BG_COLOR)
+    expr_canvas.create_window((0, 0), window=expr_inner, anchor="nw")
+
+    def _update_expr_scrollregion(_event=None) -> None:
+        """
+        Update the scrollable region whenever the inner frame changes size.
+        This keeps the scrollbar in sync with the content height.
+        """
+        expr_inner.update_idletasks()
+        bbox = expr_canvas.bbox("all")
+        if bbox:
+            expr_canvas.configure(scrollregion=bbox)
+
+    expr_inner.bind("<Configure>", _update_expr_scrollregion)
+
+    # Now build the actual expression controls inside expr_inner.
     expr_vars: Dict[str, tk.IntVar] = {}
     for key, desc in EXPRESSIONS_SEQUENCE:
         if key == "0":
+            # Neutral expression is always generated; show as a label only.
             tk.Label(
-                expr_frame,
+                expr_inner,
                 text=f"0 – {desc} (always generated)",
                 bg=BG_COLOR,
                 anchor="w",
@@ -2526,9 +2547,10 @@ def prompt_outfits_and_expressions(
                 wraplength=wrap_len // 2,
             ).pack(anchor="w", padx=6, pady=2)
             continue
+
         var = tk.IntVar(value=1)
         chk_expr = tk.Checkbutton(
-            expr_frame,
+            expr_inner,
             text=f"{key} – {desc}",
             variable=var,
             bg=BG_COLOR,
@@ -2538,6 +2560,7 @@ def prompt_outfits_and_expressions(
         )
         chk_expr.pack(anchor="w", padx=6, pady=2)
         expr_vars[key] = var
+
 
     decision = {
         "ok": False,

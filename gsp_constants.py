@@ -59,27 +59,58 @@ EXPRESSIONS: Dict[str, str] = {
 # Default ordered list of expressions we actually use per outfit.
 # The first entry is always neutral.
 EXPRESSIONS_SEQUENCE: List[Tuple[str, str]] = [
-    ("0",  "neutral expression, relaxed face, mouth closed"),
-    ("1",  "small gentle smile"),
-    ("2",  "big smile with mouth open"),
-    ("3",  "mischievous smirk"),
-    ("4",  "closed-eye happy smile"),
-    ("5",  "playful wink while smiling"),
-    ("6",  "surprised, eyes wide, mouth slightly open"),
-    ("7",  "shocked, eyes wide, mouth wide open"),
-    ("8",  "confused, one eyebrow raised"),
-    ("9",  "annoyed, eyebrows furrowed, mouth slightly open"),
-    ("10", "angry, eyebrows sharply furrowed, mouth open as if shouting"),
-    ("11", "sad, eyes downcast, mouth relaxed"),
-    ("12", "about to cry, eyes glossy with tears"),
-    ("13", "crying, tears visible on cheeks"),
-    ("14", "embarrassed blush, small frown"),
-    ("15", "embarrassed blush, small smile"),
-    ("16", "determined, eyebrows lowered, small confident smile"),
-    ("17", "tired, half-lidded eyes, small frown"),
-    ("18", "nervous, eyes a bit wide, mouth tense"),
-    ("19", "pouting, cheeks slightly puffed, lips pressed together"),
+
+    # =========================================
+    # CORE EXPRESSIONS (0–9)
+    # Most used in VN-style writing.
+    # =========================================
+    ("0",  "soft smile, mouth closed"),
+    ("1",  "neutral, relaxed face, mouth open as if talking"),
+    ("2",  "big happy smile, mouth open"),
+    ("3",  "worried, eyebrows slightly furrowed, small frown"),
+    ("4",  "angry, eyebrows sharply furrowed, mouth open"),
+    ("5",  "embarrassed, light blush, eyes slightly averted"),
+    ("6",  "surprised, wide eyes, mouth slightly open"),
+    ("7",  "sad, eyes downcast, slight frown"),
+    ("8",  "thinking, one eyebrow raised, mouth neutral"),
+    ("9",  "closed-eye happy smile"),
+
+    # =========================================
+    # CORE+ EXPRESSIONS (10–14)
+    # Very commonly needed and distinct.
+    # =========================================
+
+    ("10", "unimpressed, half-lidded eyes, flat mouth"),
+    ("11", "laughing, eyes closed, mouth open wide"),
+    ("12", "deadpan, half-lidded eyes, blank expression"),
+    ("13", "shy smile, light blush, small soft smile"),
+    ("14", "smug, self-satisfied grin, eyebrows slightly raised"),
+
+    # =========================================
+    # OPTIONAL EXPRESSIONS (15–24)
+    # Less essential but high-value.
+    # =========================================
+
+    ("15", "mischievous smirk, one eyebrow raised"),
+    ("16", "playful wink while smiling"),
+    ("17", "pouting, cheeks slightly puffed, lips pressed together"),
+    ("18", "tired, half-lidded eyes, small frown"),
+    ("19", "nervous, wide eyes, tense small mouth"),
+    ("20", "determined, eyebrows lowered, firm confident smile"),
+    ("21", "about to cry, tears welling"),
+    ("22", "crying, visible tears on cheeks"),
+    ("23", "concerned, soft eyes, small downturned mouth"),
+
+    # =========================================
+    # SPICY SAFETY TIER (25–27)
+    # The 'horny-adjacent' expressions that stay SFW.
+    # =========================================
+
+    ("25", "flustered, heavy blush, wide eyes, small tense mouth"),
+    ("26", "bashful, looking slightly away, soft blush, timid smile"),
+    ("27", "romantic longing, soft blush, half-lidded eyes, lips gently parted"),
 ]
+
 
 # Archetypes and their gender style codes
 GENDER_ARCHETYPES: List[Tuple[str, str]] = [

@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 # -----------------------
 # CONFIGURATION
 # -----------------------
-GRID_COLUMNS = 3
+GRID_COLUMNS = 5
 MIN_GRID_ROWS = 5
 PADDING = 20
 LABEL_HEIGHT = 24

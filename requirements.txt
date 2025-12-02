@@ -4,5 +4,5 @@ pillow>=10.3
 pyyaml
 pandas
 ultralytics>=8.2
-rembg
+rembg>=2.0.57
 onnxruntime

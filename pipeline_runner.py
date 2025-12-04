@@ -2,17 +2,27 @@
 """
 pipeline_runner.py
 
-Simple hub script for the sprite tools.
+Simple hub script for the visual novel development tools.
 
 Menu:
-  1. Run Gemini Sprite Character Creator
-     - Asks for an output folder using a system folder picker.
-     - Calls gemini_sprite_pipeline.run_pipeline() with that folder.
+  1. Create New Ren'Py Project (Tool 1)
+     - Creates a new Ren'Py visual novel project with character support
+     - Optionally imports existing characters
 
-  2. Generate Expression Sheets for Existing Sprites
-     - Asks for a root sprite folder using a system folder picker.
+  2. Create a New Character (Tool 2)
+     - Run Gemini Sprite Character Creator
+     - Asks for an output folder using a system folder picker
+     - Calls gemini_sprite_pipeline.run_pipeline() with that folder
+
+  3. Write Scenes Visually (Tool 3)
+     - Launches the Visual Scene Editor
+     - GUI-based scene creation with drag-drop characters
+     - Automatically generates Ren'Py code
+
+  4. Generate Expression Sheets (Utility)
+     - Asks for a root sprite folder using a system folder picker
      - Calls expression_sheet_maker.py <root folder> so that expression
-       sheets are written into each pose folder under that root.
+       sheets are written into each pose folder under that root
 
   Q. Quit
 """
@@ -99,6 +109,50 @@ def run_character_creator() -> None:
         print(f"[INFO] Character pipeline exited (code={e.code}). Returning to menu.")
 
 
+def run_project_scaffolder() -> None:
+    """
+    Create a new Ren'Py project with the character system pre-configured.
+    """
+    print("\n[Project Scaffolder] Creating a new Ren'Py visual novel project...")
+
+    root = script_root()
+    script_path = root / "renpy_project_scaffolder.py"
+    if not script_path.is_file():
+        print(f"[ERROR] Could not find renpy_project_scaffolder.py at: {script_path}")
+        return
+
+    cmd = [sys.executable, str(script_path)]
+    print(f"[DEBUG] Running: {' '.join(cmd)}")
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Project scaffolder failed with exit code {e.returncode}")
+    except Exception as e:
+        print(f"[ERROR] Could not run project scaffolder: {e}")
+
+
+def run_visual_scene_editor() -> None:
+    """
+    Launch the Visual Scene Editor (Tool 3) for GUI-based scene creation.
+    """
+    print("\n[Visual Scene Editor] Launching Tool 3...")
+
+    root = script_root()
+    script_path = root / "visual_scene_editor.py"
+    if not script_path.is_file():
+        print(f"[ERROR] Could not find visual_scene_editor.py at: {script_path}")
+        return
+
+    cmd = [sys.executable, str(script_path)]
+    print(f"[DEBUG] Running: {' '.join(cmd)}")
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Visual Scene Editor failed with exit code {e.returncode}")
+    except Exception as e:
+        print(f"[ERROR] Could not run visual scene editor: {e}")
+
+
 def run_expression_sheet_generator() -> None:
     """
     Ask the user for a sprite root folder, then call expression_sheet_maker.py
@@ -135,29 +189,37 @@ def run_expression_sheet_generator() -> None:
 
 def main() -> None:
     """
-    Display a simple numeric menu that lets the user choose whether to:
-      1) Run the Gemini sprite character creator, or
-      2) Generate expression sheets for existing sprites.
+    Display a simple numeric menu that lets the user choose:
+      1) Create new Ren'Py project
+      2) Run the Gemini sprite character creator
+      3) Visual Scene Editor (GUI-based scene creation)
+      4) Generate expression sheets for existing sprites
     """
     while True:
-        print("\n" + "=" * 60)
-        print(" SPRITE TOOL HUB")
-        print("=" * 60)
-        print("1. Create a new character (Gemini Sprite Pipeline)")
-        print("2. Generate expression sheets for existing character sprites")
+        print("\n" + "=" * 70)
+        print(" VISUAL NOVEL DEVELOPMENT TOOLKIT")
+        print("=" * 70)
+        print("1. Create new Ren'Py project (Tool 1 - Project Scaffolder)")
+        print("2. Create new character sprites (Tool 2 - Gemini Character Creator)")
+        print("3. Write scenes visually (Tool 3 - Visual Scene Editor)")
+        print("4. Generate expression sheets (Utility)")
         print("Q. Quit")
 
         choice = input("\nEnter your choice: ").strip().lower()
 
         if choice == "1":
-            run_character_creator()
+            run_project_scaffolder()
         elif choice == "2":
+            run_character_creator()
+        elif choice == "3":
+            run_visual_scene_editor()
+        elif choice == "4":
             run_expression_sheet_generator()
         elif choice == "q":
             print("\nExiting.")
             break
         else:
-            print("\n[WARN] Invalid choice; please enter 1, 2, or Q.")
+            print("\n[WARN] Invalid choice; please enter 1, 2, 3, 4, or Q.")
 
 
 if __name__ == "__main__":

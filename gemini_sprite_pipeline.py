@@ -2,7 +2,7 @@
 """
 gemini_sprite_pipeline.py
 
-Single-character Student Transfer-style sprite builder using Gemini.
+Single-character visual novel sprite builder using Gemini.
 
 This is the main orchestrator that coordinates the entire sprite generation workflow.
 All heavy lifting has been refactored into the gemini_sprite_pipeline package modules.
@@ -14,7 +14,7 @@ Flow (per character):
   - Normalize to pose A (mid-thigh, magenta bg) and review
   - Generate outfits and expressions, with review loops
   - Pick eye line, name color, and scale vs reference
-  - Flatten pose/outfit combos into ST-style poses and write character.yml
+  - Flatten pose/outfit combos into letter-based poses and write character.yml
 """
 
 import argparse
@@ -471,7 +471,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "End-to-end Student Transfer sprite builder using Google Gemini:\n"
+            "End-to-end visual novel sprite builder using Google Gemini:\n"
             "  - base pose\n"
             "  - outfits (Base + selected extras like Formal/Casual/Uniform/...)\n"
             "  - expressions per outfit (0 + selected non-neutral ones)\n"

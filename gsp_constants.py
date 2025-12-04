@@ -102,8 +102,8 @@ EXPRESSIONS_SEQUENCE: List[Tuple[str, str]] = [
     ("23", "concerned, soft eyes, small downturned mouth"),
 
     # =========================================
-    # SPICY SAFETY TIER (25–27)
-    # The 'horny-adjacent' expressions that stay SFW.
+    # ROMANTIC EXPRESSIONS (25–27)
+    # Affectionate and romantic character expressions.
     # =========================================
 
     ("25", "flustered, heavy blush, wide eyes, small tense mouth"),

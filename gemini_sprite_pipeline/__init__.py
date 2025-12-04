@@ -1,7 +1,7 @@
 """
 gemini_sprite_pipeline package
 
-A modular system for generating Student Transfer visual novel sprites using
+A modular system for generating visual novel character sprites using
 Google Gemini AI.
 
 Main components:

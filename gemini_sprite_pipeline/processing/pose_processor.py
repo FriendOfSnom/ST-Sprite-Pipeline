@@ -283,7 +283,7 @@ def generate_outfits_once(
 
 def flatten_pose_outfits_to_letter_poses(char_dir: Path) -> List[str]:
     """
-    Flatten pose/outfit combos into separate ST poses with single outfits.
+    Flatten pose/outfit combos into separate letter poses with single outfits.
 
     Input:
         <char>/a/outfits/OutfitName.png

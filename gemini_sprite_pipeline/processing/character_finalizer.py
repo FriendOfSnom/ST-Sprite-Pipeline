@@ -25,7 +25,7 @@ def finalize_character(
     Pick eye line, name color, scale, flatten poses, and write character.yml.
 
     This is the final step that converts the generated sprites into a
-    ready-to-use Student Transfer character.
+    ready-to-use visual novel character.
 
     Args:
         char_dir: Character directory.
@@ -41,7 +41,7 @@ def finalize_character(
     print("[INFO] Collecting scale vs reference...")
     scale = prompt_for_scale(rep_outfit, user_eye_line_ratio=eye_line)
 
-    print("[INFO] Flattening pose/outfit combinations into ST pose letters...")
+    print("[INFO] Flattening pose/outfit combinations into letter poses...")
     final_pose_letters = flatten_pose_outfits_to_letter_poses(char_dir)
     if not final_pose_letters:
         print("[WARN] Flattening produced no poses; using existing letter folders.")

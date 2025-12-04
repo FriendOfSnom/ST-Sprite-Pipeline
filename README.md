@@ -1,6 +1,6 @@
-# Student Transfer Sprite Pipeline Tool (v1.1.1)
+# Visual Novel Sprite Pipeline Tool (v1.1.1)
 
-A cross-platform, interactive pipeline for **downloading**, **sorting**, **organizing**, **downscaling**, and **documenting** sprites into a ready-to-use format for the Student Transfer visual novel.
+A cross-platform, interactive pipeline for **downloading**, **sorting**, **organizing**, **downscaling**, and **documenting** character sprites into a ready-to-use format for visual novel development.
 
 This suite of tools automates the process of collecting raw image data, categorizing it, cropping consistently, downscaling to in-game size, and preparing final sprite folders complete with metadata YAML files and expression sheets.
 
@@ -18,9 +18,9 @@ This suite of tools automates the process of collecting raw image data, categori
   - Sheets are now saved directly **inside each pose folder** (e.g., `<pose>/<pose>_sheet.png`), alongside `faces/` and `outfits/`, to avoid conflicts with the game.  
   - Expression images are scaled correctly based on `character.yml`.
 
-* **Downloader upgrades**  
-  - Supports **ExHentai cookies** via pasteable cookie headers, with local caching in `~/.st_sprite_tool/auth.json`.  
-  - Adjustable per-image download delay.  
+* **Downloader upgrades**
+  - Supports authentication via pasteable cookie headers, with local caching in `~/.vn_sprite_tool/auth.json`.
+  - Adjustable per-image download delay.
   - More robust resume and logging system.
 
 * **Pipeline Runner expanded**  
@@ -40,12 +40,12 @@ This suite of tools automates the process of collecting raw image data, categori
 
 ## Features
 
-* **Downloader**: Bulk image crawler for E-Hentai/ExHentai with resume, retries, and cookie support.  
-* **Manual Sorting Helper**: Interactive guide that opens file explorer and explains the required folder structure.  
-* **Organizer & Finalizer**: Tkinter UI for cropping, metadata collection, naming, and scaling.  
-* **Bulk Downscaler**: High-quality downscaling of finalized sprites to their true in-game size.  
-* **Expression Sheet Generator**: Creates printable per-pose sheets with labeled expressions.  
-* Generates **game-ready Student Transfer folders** with consistent structure and YAML metadata.  
+* **Downloader**: Bulk image crawler with resume, retries, and authentication support.
+* **Manual Sorting Helper**: Interactive guide that opens file explorer and explains the required folder structure.
+* **Organizer & Finalizer**: Tkinter UI for cropping, metadata collection, naming, and scaling.
+* **Bulk Downscaler**: High-quality downscaling of finalized sprites to their true in-game size.
+* **Expression Sheet Generator**: Creates printable per-pose sheets with labeled expressions.
+* Generates **game-ready character folders** with consistent structure and YAML metadata.
 * Cross-platform launchers for **Windows** and **macOS**.
 
 ---
@@ -94,9 +94,9 @@ This will:
 The pipeline is interactive and can be run step-by-step or in full sequence.
 
 ### 1. Downloader
-* Input gallery start page URL.  
-* Downloads images into your OS **Downloads** folder.  
-* Supports resume, retries, logging, and ExHentai cookies.
+* Input gallery start page URL.
+* Downloads images into your OS **Downloads** folder.
+* Supports resume, retries, logging, and authentication cookies.
 
 ### 2. Manual Sorting Helper
 * Guides you to organize sprites into:
@@ -160,8 +160,8 @@ project-root/
 
 * Run everything via `pipeline_runner.py` (or the launcher scripts).  
 * Restart from any step with the same folder if needed.  
-* Backups are **not** made by default—game directories remain clean.  
-* ExHentai requires cookie login info—see downloader instructions.  
+* Backups are **not** made by default—output directories remain clean.
+* Some image sources may require authentication—see downloader instructions.
 * `reference_sprites/` must include both `.png` and `.yml` with scale values for reference matching.  
 
 ---
@@ -171,11 +171,11 @@ project-root/
 ### v1.1.1
 * Added **Bulk Downscaler (Step 4)** for high-quality, in-game downscaling.
 * Improved **Expression Sheet Generator**: sheets saved directly in pose folders, respecting `character.yml` scale.
-* Expanded **Downloader** with ExHentai cookie support, local caching, and adjustable per-image delays.
+* Expanded **Downloader** with authentication support, local caching, and adjustable per-image delays.
 * Enhanced **Pipeline Runner**: five-step workflow, better path passing, standalone step support.
 * Added **macOS launcher script** (`start-mac.command`) with Homebrew-based Tk/Python setup.
 
 ### v1.0.0
-* Initial release of the Student Transfer Sprite Pipeline Tool.
+* Initial release of the Visual Novel Sprite Pipeline Tool.
 * Included: Downloader, Manual Sorting Helper, Organizer/Finalizer, Expression Sheet Generator.
 * Windows batch script for quick setup and launch.
